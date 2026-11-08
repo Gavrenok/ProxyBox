@@ -45,6 +45,7 @@ import ipv6_policy as ip6policy  # noqa: E402
 import ios_location as iosmod  # noqa: E402
 import ios_location_panel as iospanel  # noqa: E402
 import ios_pairing as iospair  # noqa: E402
+import connectivity as connmod  # noqa: E402
 
 ETC = os.environ.get('GEOBOX_ETC', '/etc/geobox')
 PROXY_FILE = os.path.join(ETC, 'proxy.json')
@@ -1569,6 +1570,47 @@ def session_udp_probe(session, client_ip):
     return report
 
 
+def action_connection_diagnostics(session, client_ip):
+    """Read-only diagnosis scoped to the authenticated request's socket peer."""
+    if not apply_lock.acquire(blocking=False):
+        return ('warn', 'Подключение занято другой операцией. Повтори диагностику после её завершения.')
+    try:
+        with lib_lock:
+            before = audit_signature()
+            config = load_json(SB_CONFIG, {})
+            devices = devmod.load(ETC)
+            proxy, scope = client_proxy(client_ip)
+        def probe_exit():
+            if scope == 'device_proxy':
+                result, error = with_temp_proxy(proxy['outbound'], proxy.get('secrets'),
+                    lambda url: connmod.probe_https(url, run))
+                return result if not error else 'unknown'
+            return connmod.probe_https(CHECK_PROXY, run)
+        report = connmod.diagnose(config, devices, scope, bool(proxy and proxy.get('outbound')),
+                                  run, lambda cfg: fastmod.Client(cfg).request('GET', '/proxies/proxy'),
+                                  probe_exit)
+        after = audit_signature()
+        report['stale'] = before != after
+        with sess_lock:
+            session['connection_diagnosis'] = {'report': report, 'signature': after, 'client_ip': client_ip}
+        return ('ok' if report['status'] == 'pass' and not report['stale'] else 'warn',
+                'Диагностика завершена. Результат — в «Обзоре»; настройки не менялись.')
+    finally:
+        apply_lock.release()
+
+
+def session_connection_diagnosis(session, client_ip):
+    with sess_lock:
+        saved = session.get('connection_diagnosis')
+        if not saved:
+            return None
+        report = dict(saved['report'])
+        signature, previous_client = saved['signature'], saved['client_ip']
+    report['stale'] = (report.get('stale', False) or signature != audit_signature()
+                       or previous_client != client_ip or time.time() - report.get('checked_at', 0) > 300)
+    return report
+
+
 def queue_action(session, label, action, probe_result=False):
     """Respond immediately, execute slow actions off the HTTP request thread."""
     with sess_lock:
@@ -1699,7 +1741,7 @@ TAB_OF_PATH = {'/ipv6': 'settings', '/check': 'status', '/speed': 'status', '/pr
                '/ios/location': 'mimic'}
 
 
-def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters=None, import_result=None, job=None, audit_result=None, udp_result=None, pairing_owner=''):
+def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters=None, import_result=None, job=None, audit_result=None, udp_result=None, pairing_owner='', connection_report=None):
     if tab not in TAB_NAMES:
         tab = 'status'
     e = html.escape
@@ -1767,6 +1809,7 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
                    + '<a href="/?tab=status" style="align-self:center">обновить</a></div>'
                    + '<div class="hint">Замер скачивания с малины через прокси к указанному серверу, до 4 соединений. '
                      'Скорость Wi-Fi устройства он не измеряет. «Первый ответ» включает подключение и ответ сервера, это не пинг.</div></div>')
+        cards['status'].append(connmod.render(connection_report))
         age = st.get('sample_age')
         if age is None:
             cards['status'].append('<div class="hint">Собираем состояние служб и Wi-Fi в фоне. Обнови страницу через несколько секунд.</div>')
@@ -2047,7 +2090,8 @@ class Handler(BaseHTTPRequestHandler):
         filters = {k: query.get(k, [''])[0] for k in ('q', 'tag', 'favorite')}
         audit_result = session_audit(s) if tab == 'mimic' else None
         udp_result = session_udp_probe(s, self.client_address[0]) if tab == 'mimic' else None
-        return self._send(200, main_page(flash, probe_res, tab, self.client_address[0], filters, import_result, job, audit_result, udp_result, tok))
+        connection_report = session_connection_diagnosis(s, self.client_address[0]) if tab == 'status' else None
+        return self._send(200, main_page(flash, probe_res, tab, self.client_address[0], filters, import_result, job, audit_result, udp_result, tok, connection_report))
 
     def do_POST(self):
         self._request_started = time.monotonic()
@@ -2121,6 +2165,7 @@ class Handler(BaseHTTPRequestHandler):
         slow = {
             '/ipv6': ('Проверка и применение IPv6', lambda: action_ipv6(f.get('mode', ''))),
             '/diagnostics': ('Проверка защиты на малине', lambda: action_diagnostics(s)),
+            '/diagnostics/connection': ('Поиск причины отсутствия интернета', lambda: action_connection_diagnostics(s, self.client_address[0])),
             '/diagnostics/udp': ('Проверка UDP у прокси', lambda: action_udp_diagnostics(s, self.client_address[0])),
             '/proxy': ('Переключение прокси', lambda: action_set_proxy(f.get('proxy', ''))),
             '/proxy/off': ('Отключение общего прокси', action_proxy_off),

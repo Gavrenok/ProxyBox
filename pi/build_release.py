@@ -18,6 +18,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_FILES = (
+    'connectivity.py',
     'devices.py', 'fastswitch.py', 'geobox.nft', 'geobox.py',
     'ios_location_panel.py', 'ios_location.js', 'ios_location.py', 'ios_pairing.py',
     'ipv6_policy.py', 'ipv6_probe.py', 'ipv6-network-setup.sh',

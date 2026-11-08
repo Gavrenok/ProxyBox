@@ -20,6 +20,10 @@ over an existing setup. The project's license has not yet been selected.
 - IPv6 blocked by default, with a proxy mode enabled after checking support
   through the global proxy. Per-device assignments disable IPv6 for all clients.
 - Browser IP/WebRTC diagnostics and a separate audit of the Pi's network rules.
+- An on-demand “Why is there no internet?” report in Overview: proxy assignment,
+  upstream route, Wi-Fi, tunnel, network policy, HTTPS and local DNS. It does not
+  switch proxies or restart services. Results expire after five minutes or changes
+  to configuration/client address. A timeout is not treated as proof of an expired proxy.
 - Settings backup and Telegram notifications.
 - Experimental location simulation for a paired iPhone: apply the proxy's
   coordinates, restore real location, and optionally synchronize automatically.
