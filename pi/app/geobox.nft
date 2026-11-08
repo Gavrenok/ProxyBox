@@ -1,0 +1,42 @@
+#!/usr/sbin/nft -f
+# GeoBox: фаервол для Wi-Fi клиентов.
+# Главное правило (kill switch): из wlan0 наружу можно ТОЛЬКО в sbtun (sing-box -> прокси).
+# Прямой путь wlan0 -> eth0 запрещён, поэтому если sing-box упал, у клиентов просто нет интернета.
+table inet geobox
+delete table inet geobox
+table inet geobox {
+    # счётчики трафика по адресам клиентов Wi-Fi (панель читает их для вкладки «Устройства»)
+    set tx { type ipv4_addr; flags dynamic; counter; size 1024; }
+    set rx { type ipv4_addr; flags dynamic; counter; size 1024; }
+    set tx6 { type ipv6_addr; flags dynamic; counter; size 4096; }
+    set rx6 { type ipv6_addr; flags dynamic; counter; size 4096; }
+    chain input {
+        type filter hook input priority filter; policy accept;
+        # DNS stays on IPv4 so per-device policy remains tied to the DHCP address.
+        # Put these drops before conntrack, including after a policy reload.
+        iifname "wlan0" meta nfproto ipv6 udp dport 53 drop
+        iifname "wlan0" meta nfproto ipv6 tcp dport 53 drop
+        iifname "wlan0" icmpv6 type { nd-router-advert, nd-redirect } drop
+        iifname "wlan0" ct state established,related accept
+        iifname "wlan0" meta nfproto ipv4 udp dport { 53, 67 } accept
+        iifname "wlan0" meta nfproto ipv4 tcp dport { 53, 80 } accept
+        iifname "wlan0" icmp type echo-request accept
+        # SLAAC/DAD/neighbor discovery; never accept a router learned from a client.
+        iifname "wlan0" ip6 hoplimit 255 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+        iifname "wlan0" icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+        # Optional iPhone discovery; pairing TCP ports stay closed.
+        iifname "wlan0" ip saddr 10.77.0.0/24 ip daddr { 10.77.0.1, 224.0.0.251 } udp dport 5353 accept comment "geobox-ios-mdns"
+        iifname "wlan0" ip6 saddr fe80::/10 ip6 daddr ff02::fb udp dport 5353 accept comment "geobox-ios-mdns"
+        iifname "wlan0" drop
+        # DNS sing-box снаружи (домашняя сеть) не отвечает - только Wi-Fi клиентам
+        iifname != "lo" udp dport 53 drop
+        iifname != "lo" tcp dport 53 drop
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        iifname "wlan0" oifname "sbtun" update @tx { ip saddr } accept
+        iifname "sbtun" oifname "wlan0" update @rx { ip daddr } accept
+        iifname "wlan0" oifname "sbtun" ip6 saddr fd77:6765:6f62:1::/64 update @tx6 { ip6 saddr } accept
+        iifname "sbtun" oifname "wlan0" ip6 daddr fd77:6765:6f62:1::/64 update @rx6 { ip6 daddr } accept
+    }
+}

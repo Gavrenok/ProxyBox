@@ -1,0 +1,44 @@
+# Local firmware research and executable downloads must never be published.
+/analysis/
+/singbox/
+*.img
+*.img.xz
+*.ext4
+*.bin
+*.exe
+*.tar.xz
+*.log
+*.bak
+*.bak[0-9]*
+
+# Runtime configuration contains credentials; use synthetic examples instead.
+proxy.json
+panel.json
+settings.json
+library.json
+devices.json
+sing-box.json
+switch-pending.json
+*backup*.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local build and test caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+/dist/
+ios-location.json
+ipv6-policy.json
+traffic.json
+remote_*.plist
+*.mobileprovision
+*.dmg
+*.ipsw
+*.aea
+*.cryptex

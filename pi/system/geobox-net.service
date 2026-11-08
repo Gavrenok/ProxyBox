@@ -1,0 +1,14 @@
+[Unit]
+Description=GeoBox routing and firewall
+After=nftables.service network-pre.target sys-subsystem-net-devices-wlan0.device
+Wants=sys-subsystem-net-devices-wlan0.device
+Before=NetworkManager.service geobox-singbox.service dnsmasq.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/opt/geobox/net-up.sh
+
+[Install]
+WantedBy=multi-user.target
