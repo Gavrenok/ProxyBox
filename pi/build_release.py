@@ -31,6 +31,7 @@ SYSTEM_FILES = (
     'geobox-net.service', 'geobox-singbox.service', 'geobox-panel.service',
     'geobox.conf', 'geobox-ipv6.conf',
 )
+GUIDE_IMAGES = ('setup-en.png', 'setup-ru.png', 'iphone-en.png', 'iphone-ru.png')
 FILES = {
     **{'app/' + name: 'pi/app/' + name for name in APP_FILES},
     **{'app/' + name: 'pi/' + name for name in HELPERS},
@@ -38,6 +39,7 @@ FILES = {
     'install.py': 'pi/install.py',
     'README.md': 'README.md',
     'README.ru.md': 'README.ru.md',
+    **{'docs/images/' + name: 'docs/images/' + name for name in GUIDE_IMAGES},
 }
 
 

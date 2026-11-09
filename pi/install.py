@@ -31,6 +31,8 @@ BACKUPS = Path('/var/lib/geobox-installer')
 RECEIPT = STATE / 'release.json'
 SB_VERSION = '1.14.4'
 IOS_VERSION = '11.49.0'
+GUIDE_ASSETS = {'docs/images/' + name for name in
+                ('setup-en.png', 'setup-ru.png', 'iphone-en.png', 'iphone-ru.png')}
 NETWORK = {'geobox.nft', 'net-up.sh', 'tun-route.sh', 'ipv6-network-setup.sh'}
 SYSTEM = {'geobox-net.service', 'geobox-singbox.service', 'geobox-panel.service',
           'geobox.conf', 'geobox-ipv6.conf'}
@@ -64,12 +66,17 @@ def verify_release(root):
     if not required <= files.keys():
         raise ValueError('Release is incomplete')
     for name, expected in files.items():
-        if not re.fullmatch(r'(?:app/[a-z0-9_-]+\.(?:py|js|sh|nft)|system/[a-z0-9.-]+|install\.py|README(?:\.ru)?\.md)', name):
+        if name not in GUIDE_ASSETS and not re.fullmatch(r'(?:app/[a-z0-9_-]+\.(?:py|js|sh|nft)|system/[a-z0-9.-]+|install\.py|README(?:\.ru)?\.md)', name):
             raise ValueError('Unexpected release path')
         if name.startswith('system/') and name.split('/')[1] not in SYSTEM:
             raise ValueError('Unexpected system file')
         path = root / name
-        if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
+        cursor = path
+        linked = False
+        while cursor != root:
+            linked = linked or cursor.is_symlink()
+            cursor = cursor.parent
+        if linked or not path.is_file():
             raise ValueError('Release contains a missing file or symbolic link')
         if not isinstance(expected, str) or not re.fullmatch('[a-f0-9]{64}', expected) or digest(path) != expected:
             raise ValueError('Release checksum mismatch: ' + name)
