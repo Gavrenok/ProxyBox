@@ -46,6 +46,9 @@ import ios_location as iosmod  # noqa: E402
 import ios_location_panel as iospanel  # noqa: E402
 import ios_pairing as iospair  # noqa: E402
 import connectivity as connmod  # noqa: E402
+import failover_policy as failpolicy  # noqa: E402
+import proxy_checks  # noqa: E402
+import setup_panel  # noqa: E402
 
 ETC = os.environ.get('GEOBOX_ETC', '/etc/geobox')
 PROXY_FILE = os.path.join(ETC, 'proxy.json')
@@ -780,12 +783,13 @@ def switcher():
                          lambda: run(['systemctl', 'reload', 'dnsmasq'])[0] == 0)
 
 
-def switch_proxy(proxy):
+def switch_proxy(proxy, accept_exit=None):
     """Caller holds apply_lock. Persist selection only after installed exit responds."""
     state['switch'] = {'status': 'applying', 'message': 'Переключаю и проверяю выход…', 'time': time.time()}
     policy = ipv6_candidate(proxy)
     prepare = (lambda: write_private(ipv6_path(), json.dumps(policy))) if policy['mode'] == 'proxy' else None
-    result = switcher().switch(proxy, prepare=prepare)
+    options = {'accept_exit': accept_exit} if accept_exit is not None else {}
+    result = switcher().switch(proxy, prepare=prepare, **options)
     state['switch'] = result
     if result['status'] != 'unchanged':
         state['exit'], state['exit_time'] = result.get('exit'), time.time()
@@ -961,9 +965,10 @@ def failover():
         return
     original = load_proxy()
     cur = _lib_item_for(original)
-    exclude = [cur['id']] if cur else []
-    best = libmod.pick_failover(lib, exclude)
-    order = ([best] if best else []) + [it for it in lib['items'] if it['id'] not in exclude and (not best or it['id'] != best['id'])]
+    rules = failpolicy.policy(lib)
+    if failpolicy.cooling_down(lib, rules):
+        return
+    order = failpolicy.candidates(lib, cur['id'] if cur else '')
     for it in order[:6]:
         info, err = probe_outbound(it['outbound'], it.get('secrets'))
         with lib_lock:
@@ -972,21 +977,35 @@ def failover():
             libmod.save(ETC, lib2)
         if not info:
             continue
+        if not failpolicy.allows_country(info, rules):
+            continue
         with apply_lock:
             # A user's switch wins over a watchdog probe that started earlier.
             if load_proxy() != original or state['fails'] < 2 or not libmod.load(ETC).get('failover'):
                 return
+            with lib_lock:
+                latest = libmod.load(ETC)
+                live_item = libmod.get(latest, it['id'])
+                if failpolicy.policy(latest) != rules or failpolicy.cooling_down(latest, rules):
+                    return
+                if not live_item or libmod.identity(live_item) != libmod.identity(it) or not failpolicy.in_group(live_item, rules):
+                    continue
             p = libmod.as_proxy(it)
-            result = switch_proxy(p)
+            result = switch_proxy(p, accept_exit=lambda actual: failpolicy.allows_country(actual, rules))
             if not result['ok']:
                 if result['status'] in ('blocked', 'attention'):
                     return
                 continue
+            with lib_lock:
+                latest = libmod.load(ETC)
+                failpolicy.record(latest, cur['id'] if cur else '', it['id'],
+                                  (result.get('exit') or {}).get('country', ''))
+                libmod.save(ETC, latest)
         state['failover_note'] = 'Автозамена в %s: %s не отвечал, переключил на %s.' % (
             time.strftime('%H:%M'), proxy_label(cur) if cur else 'прокси', proxy_label(it))
         tg_event('failover', state['failover_note'])
         return
-    note = 'Автозамена в %s: живых прокси в библиотеке не нашлось.' % time.strftime('%H:%M')
+    note = 'Автозамена в %s: подходящий живой резерв не найден. Проверь группу и ограничение страны.' % time.strftime('%H:%M')
     if state['failover_note'] != note:
         tg_event('failover', note)
     state['failover_note'] = note
@@ -1069,16 +1088,29 @@ def _devices_using(item_id):
 
 
 def action_lib(op, item_id):
+    if op in ('failover_on', 'failover_off'):
+        with apply_lock:
+            with lib_lock:
+                lib = libmod.load(ETC)
+                lib['failover'] = op == 'failover_on'
+                libmod.save(ETC, lib)
+        return ('ok', 'Автозамена включена.' if lib['failover'] else 'Автозамена выключена.')
     with lib_lock:
         lib = libmod.load(ETC)
-        if op in ('failover_on', 'failover_off'):
-            lib['failover'] = op == 'failover_on'
-            libmod.save(ETC, lib)
-            return ('ok', 'Автозамена включена.' if lib['failover'] else 'Автозамена выключена.')
         it = libmod.get(lib, item_id)
     if not it:
         return ('err', 'Такого прокси в списке нет.')
     label = proxy_label(it)
+    if op == 'capabilities':
+        report = proxy_checks.measure(it, probe_outbound, udpmod.probe, ip6probe.probe)
+        with lib_lock:
+            lib = libmod.load(ETC)
+            latest = libmod.get(lib, item_id)
+            if not latest or libmod.identity(latest) != libmod.identity(it):
+                return ('warn', 'Профиль изменился. Повтори проверку.')
+            latest['capabilities'] = report
+            libmod.save(ETC, lib)
+        return ('ok', 'Проверки завершены. Открой «Возможности прокси»: неопределённый результат не означает отсутствие поддержки.')
     if op == 'check':
         info, err = probe_outbound(it['outbound'], it.get('secrets'))
         with lib_lock:
@@ -1273,7 +1305,9 @@ def _action_restore_locked(raw, with_wifi):
         return ('err', 'В файле испорчен общий прокси.')
     with lib_lock:
         def prepare():
-            libmod.save(ETC, {'items': items, 'failover': bool(lib.get('failover'))})
+            restored_policy = failpolicy.policy(lib)
+            libmod.save(ETC, {'items': items, 'failover': bool(lib.get('failover')) and restored_policy is not None,
+                              'failover_policy': restored_policy or failpolicy.validate()})
             devmod.save(ETC, devs)
             ok, _ = devmod.write_hosts(ETC, devs, run)
             if not ok:
@@ -1672,7 +1706,8 @@ h1{font-size:20px;margin:6px 0 16px}
 .row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;flex-wrap:wrap}
 .k{color:#9aa4b2}
 .v{text-align:right;word-break:break-word}
-select,textarea,input[type=text],input[type=password]{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #333a48;background:#0f1115;color:#e6e6e6;font:inherit}
+select,textarea,input[type=text],input[type=password],input[type=number]{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #333a48;background:#0f1115;color:#e6e6e6;font:inherit}
+form.setup label,form.failover-settings label{display:block;margin:12px 0}
 button{padding:9px 14px;border-radius:8px;border:0;background:#3b82f6;color:#fff;font:inherit;cursor:pointer}
 button.g{background:#2a2f3a}
 form.i{display:inline}
@@ -1705,11 +1740,11 @@ textarea{resize:vertical;min-height:44px;font-family:ui-monospace,Menlo,Consolas
 """
 
 
-def page(title, body):
-    return ('<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+def page(title, body, lang='ru'):
+    return ('<!doctype html><html lang="%s"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>%s</title><style>%s</style></head><body><div class="w">%s</div></body></html>'
-            % (html.escape(title), CSS, body))
+            % (setup_panel.language(lang), html.escape(title), CSS, body))
 
 
 def login_page(msg=''):
@@ -1717,6 +1752,29 @@ def login_page(msg=''):
     return page('GeoBox', '<h1>GeoBox</h1>%s<div class="c"><form method="post" action="/login">'
                 '<input type="password" name="password" placeholder="пароль панели" autofocus autocomplete="current-password">'
                 '<div class="f"><button>Войти</button></div></form></div>' % m)
+
+
+def setup_action(session, op, fields):
+    if op == 'wifi':
+        result = action_wifi(fields.get('ssid', ''), fields.get('pw', ''),
+                             fields.get('pw2', ''), fields.get('band', ''))
+        next_step = 2
+    elif op == 'proxy':
+        result = action_set_proxy(fields.get('proxy', ''))
+        next_step = 3
+    elif op == 'check':
+        current = load_proxy()
+        item = _lib_item_for(current)
+        if not item:
+            return ('err', 'Сначала добавь и примени прокси.')
+        result = action_lib('capabilities', item['id'])
+        next_step = 3
+    else:
+        return ('err', 'Неизвестный шаг мастера.')
+    if result[0] == 'ok':
+        with sess_lock:
+            session['setup_step'] = next_step
+    return result
 
 
 def _row(k, v):
@@ -1746,7 +1804,7 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
         tab = 'status'
     e = html.escape
     st = status_dict()
-    out = ['<h1>GeoBox</h1>']
+    out = ['<h1>GeoBox</h1><p><a href="/setup">Мастер настройки / Setup wizard</a></p>']
     if job and job.get('status') == 'running':
         out.append('<div class="c" id="panel-job" data-job="%s"><b>%s</b>'
                    '<div class="hint" id="panel-job-message">Выполняется. Можно переходить между вкладками.</div>'
@@ -2076,6 +2134,24 @@ class Handler(BaseHTTPRequestHandler):
             if not s:
                 return self._send(401, '{}', 'application/json')
             return self._send(200, json.dumps(status_dict(), ensure_ascii=False), 'application/json; charset=utf-8')
+        if path == '/setup':
+            if not s:
+                return self._redirect('/')
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            with sess_lock:
+                lang = setup_panel.language(query.get('lang', [s.get('setup_lang', 'ru')])[0])
+                s['setup_lang'] = lang
+                try:
+                    step = max(1, min(4, int(query.get('step', [s.get('setup_step', 1)])[0])))
+                except (TypeError, ValueError):
+                    step = 1
+                flash = s.pop('flash', None)
+                job = dict(s.get('job') or {})
+            current = load_proxy()
+            body = setup_panel.render(lang, step, wifi_settings(), current,
+                _lib_item_for(current), flash, job,
+                bool(current and state.get('exit') and time.time() - state.get('exit_time', 0) < 300))
+            return self._send(200, page('ProxyBox setup', body, lang))
         if path != '/':
             return self._send(404, page('GeoBox', '<p>Нет такой страницы. <a href="/">На главную</a></p>'))
         if not s:
@@ -2120,6 +2196,29 @@ class Handler(BaseHTTPRequestHandler):
         tok, s = self._session()
         if not s:
             return self._redirect('/')
+        if path == '/setup':
+            op = f.get('op', '')
+            if op not in ('wifi', 'proxy', 'check'):
+                return self._send(400, page('ProxyBox', '<p>Unknown setup step.</p>'))
+            with sess_lock:
+                s['setup_lang'] = setup_panel.language(f.get('lang'))
+                s['setup_step'] = {'wifi': 1, 'proxy': 2, 'check': 3}[op]
+            queue_action(s, 'Setup / Настройка', lambda: setup_action(s, op, f))
+            return self._redirect('/setup')
+        if path == '/lib/failover':
+            try:
+                rules = failpolicy.validate(f.get('tag', ''), f.get('country', ''), f.get('cooldown', '300'))
+                with apply_lock:
+                    with lib_lock:
+                        lib = libmod.load(ETC)
+                        lib['failover_policy'] = rules
+                        libmod.save(ETC, lib)
+                msg = ('ok', 'Ограничения автозамены сохранены. Включение автозамены — отдельной кнопкой.')
+            except (ValueError, TypeError):
+                msg = ('err', 'Проверь группу (до 24 символов), страну (DE/ES/PR или пусто) и паузу (60–86400 секунд).')
+            with sess_lock:
+                s['flash'] = msg
+            return self._redirect('/?tab=proxies')
         if path == '/logout':
             get_ios_pairing_manager().stop(tok)
             with sess_lock:
@@ -2173,7 +2272,7 @@ class Handler(BaseHTTPRequestHandler):
             '/check': ('Проверка выхода', lambda: ('ok', 'Выход проверен') if check_exit() else ('err', 'Выход не отвечает: прокси недоступен или не задан')),
             '/device': ('Применение настроек устройства', lambda: action_device(f.get('mac', ''), f.get('ip', ''), f.get('choice', ''), f.get('name', ''))),
         }
-        if path == '/lib' and f.get('op') in ('apply', 'check', 'speed'):
+        if path == '/lib' and f.get('op') in ('apply', 'check', 'speed', 'capabilities'):
             slow['/lib'] = ('Операция с прокси из библиотеки', lambda: action_lib(f.get('op', ''), f.get('id', '')))
         if path in slow:
             label, action = slow[path]

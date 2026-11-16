@@ -18,6 +18,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_FILES = (
+    'failover_policy.py', 'proxy_checks.py', 'setup_panel.py',
     'connectivity.py',
     'devices.py', 'fastswitch.py', 'geobox.nft', 'geobox.py',
     'ios_location_panel.py', 'ios_location.js', 'ios_location.py', 'ios_pairing.py',

@@ -10,6 +10,8 @@ import html
 import time
 
 import library as libmod
+import failover_policy
+import proxy_checks
 
 MAX_IMPORT_BYTES = 128 * 1024
 MAX_IMPORT_LINES = 200
@@ -211,6 +213,7 @@ def render_library(lib, current_id='', devices=None, import_result=None, filters
             '<input type="hidden" name="op" value="%s"><button class="%s">%s</button></form>'
             % (_esc(item_id), op, cls, label)
             for op, cls, label in (('apply', '', 'Применить'), ('check', 'g', 'Проверить'),
+                                   ('capabilities', 'g', 'Проверить возможности'),
                                    ('speed', 'g', 'Скорость'), ('delete', 'g', 'Удалить')))
         parts.append('<div class="li"><div><b>%s%s</b>%s</div><div class="k">%s%s</div>'
                      '<div>%s</div><div>%s</div>' % (
@@ -226,6 +229,7 @@ def render_library(lib, current_id='', devices=None, import_result=None, filters
                 speed['mbps'], _esc(speed.get('source', '')), _esc(_age(speed.get('time')))))
         elif speed:
             parts.append('<div class="hint">Старый замер требует повторной проверки.</div>')
+        parts.append(proxy_checks.render(item))
         parts.append('<div class="f">%s</div><details style="margin-top:10px"><summary>Название, метки, избранное</summary>'
                      '<form method="post" action="/lib/meta"><input type="hidden" name="id" value="%s">'
                      '<label>Название<input type="text" name="name" maxlength="60" value="%s"></label>'
@@ -238,11 +242,36 @@ def render_library(lib, current_id='', devices=None, import_result=None, filters
         parts.append('<p class="k">%s</p>' % ('Ничего не найдено. Измени фильтры.' if lib['items']
                                              else 'Библиотека пока пуста. Добавь список выше или проверь один прокси.'))
     failover = bool(lib.get('failover'))
+    rules = failover_policy.policy(lib)
+    if rules is None:
+        parts.append('<p class="err">Ограничения автозамены повреждены: переключения заблокированы. Сохрани их заново.</p>')
+        rules = failover_policy.validate()
+    parts.append('<h2>Резервные прокси</h2><form class="failover-settings" method="post" action="/lib/failover">'
+                 '<label>Метка группы (пусто — вся библиотека)<input type="text" name="tag" maxlength="24" value="%s"></label>'
+                 '<label>Страна выхода (пусто — любая)<input type="text" name="country" maxlength="2" placeholder="DE" value="%s"></label>'
+                 '<label>Минимальная пауза между автозаменами, секунд<input name="cooldown" type="number" '
+                 'min="60" max="86400" required value="%d"></label>'
+                 '<div class="f"><button class="g">Сохранить ограничения</button></div></form>'
+                 '<p class="hint">Страна проверяется перед переключением и при подтверждении нового выхода. '
+                 'Если подходящего резерва нет, прямой выход не включается. '
+                 'Провайдер может изменить IP и страну позже — эта настройка не фиксирует географию ротирующего прокси. '
+                 'За один цикл проверяется до 6 резервов.</p>' % (_esc(rules['tag']), _esc(rules['country']), rules['cooldown']))
+    history = lib.get('failover_history') or []
+    history = [event for event in history if isinstance(event, dict)] if isinstance(history, list) else []
+    if history:
+        parts.append('<details><summary>Последние автозамены</summary><ul>')
+        for event in reversed(history[-25:]):
+            old = libmod.get(lib, event.get('from')) or {}
+            new = libmod.get(lib, event.get('to')) or {}
+            parts.append('<li>%s: %s → %s · %s</li>' % (_esc(_age(event.get('time'))),
+                _esc(old.get('name') or event.get('from') or '—'),
+                _esc(new.get('name') or event.get('to') or '—'), _esc(event.get('country'))))
+        parts.append('</ul></details>')
     parts.append('<form method="post" action="/lib"><input type="hidden" name="op" value="%s">'
                  '<input type="hidden" name="id" value=""><div class="f"><button class="g">%s</button></div></form>'
-                 '<div class="hint">Записи хранятся до явного удаления; избранное и метки не влияют на маршрутизацию. '
+                 '<div class="hint">Записи хранятся до явного удаления. Метки ограничивают резерв, если группа выбрана выше. '
                  'Автозамена относится к общему прокси и может сменить IP во время работы. '
-                 'Она выбирает недавно проверенный прокси; сам импорт её не запускает.</div></div>' % (
+                 'Резерв проверяется перед применением; сам импорт её не запускает.</div></div>' % (
                      'failover_off' if failover else 'failover_on',
                      'Автозамена включена — выключить' if failover else 'Автозамена выключена — включить'))
     return ''.join(parts)

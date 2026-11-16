@@ -125,7 +125,7 @@ class Switcher:
             return self._blocked('Не удалось прочитать журнал незавершённого переключения.')
         return self._rollback(saved, 'Восстановление после прерванного переключения.')
 
-    def switch(self, proxy, prepare=None, verify=True):
+    def switch(self, proxy, prepare=None, verify=True, accept_exit=None):
         if os.path.exists(self.journal_path):
             recovered = self.recover()
             if recovered and recovered['status'] in ('blocked', 'attention'):
@@ -146,6 +146,8 @@ class Switcher:
             actual_exit = self.verify() if proxy is not None and verify else None
             if proxy is not None and verify and not actual_exit:
                 return self._rollback(saved, 'После переключения новый выход не ответил.')
+            if proxy is not None and accept_exit is not None and not accept_exit(actual_exit):
+                return self._rollback(saved, 'Новый выход не соответствует ограничениям автозамены.')
             if proxy is None:
                 restore(self.proxy_path, None)
             else:

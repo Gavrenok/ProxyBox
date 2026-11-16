@@ -158,9 +158,15 @@ blocked until you add a working proxy in the next step.
 2. Open **[http://10.77.0.1/](http://10.77.0.1/)** in Safari or another browser.
    Type it into the address bar, not a search box. It uses **http**, not https.
 3. Sign in with the **panel password** from step 5.
-4. Open **Прокси** (Proxies), paste your provider's proxy, and press **Проверить** (Check).
-5. If the check succeeds, press **Применить** (Apply), then wait for the result.
-6. Open **Обзор → Проверить выход** (Overview → Check exit).
+4. Open **Мастер настройки / Setup wizard**, then choose **English**.
+5. Keep the current Wi-Fi settings. Paste your provider's proxy on step 2 and
+   press **Check and apply**. Wait for the result.
+6. Step 3 offers an optional capability check; step 4 explains how to check
+   the connection from your phone. The wizard is also at **http://10.77.0.1/setup**
+   after login. It configures the installed panel; it does not replace steps 1–5.
+
+You can still manage proxies directly in **Прокси** (Proxies) and verify the
+active exit in **Обзор → Проверить выход** (Overview → Check exit).
 
 Example input format — **not a working proxy**:
 
@@ -177,6 +183,29 @@ your proxy's address. For a client-side comparison, open [BrowserLeaks IP](https
 Test on the device connected to **My ProxyBox**, not your PC on the home Wi-Fi.
 The panel is also available on your trusted home LAN; do not forward its port 80
 from your router to the internet.
+
+### Capability checks and backup proxies
+
+**Проверить возможности** (Check capabilities) in the library records HTTPS,
+SOCKS5 UDP and IPv6 HTTPS results. It makes external requests through that
+proxy without selecting it or enabling UDP/IPv6 for clients. “Inconclusive”
+does not mean unsupported. Client DNS remains **Not tested**: these Pi-side
+checks are not a browser leak test. Speed is measured with a separate button.
+
+To use automatic replacement, add backup proxies to the library and give them
+a shared tag, for example `reserve`. In **Резервные прокси** (Backup proxies):
+
+1. Enter that tag, an optional two-letter exit country (`DE`, `ES`, `PR`), and a
+   minimum interval between successful replacements (default **300 seconds**).
+2. Save the constraints, then enable automatic replacement with its separate button.
+3. The watchdog can replace a failing **default proxy** with a freshly checked
+   backup. It checks up to six candidates per cycle. Individual device assignments
+   are not changed. If no suitable backup works, direct access is not enabled.
+
+Country is checked before switching and again when confirming the new exit;
+a mismatch at confirmation triggers rollback. This does not pin the country
+of a rotating proxy after connection. The last 25 successful automatic replacements
+are kept locally. Restoring a backup keeps the constraints but resets this history.
 
 ## Optional: iPhone location
 
@@ -326,6 +355,9 @@ dependency lock and a project license are also still pending.
 ## Features
 
 - Proxy import and library, per-device assignments and exit checks.
+- Russian/English setup wizard; saved proxy capability snapshots.
+- Opt-in default-proxy failover with a reserve tag, exit-country constraint,
+  cooldown and a bounded local history.
 - Switching between compatible saved proxies without restarting the engine.
 - Blocking direct client access when the tunnel is unavailable; traffic counters.
 - IPv6 blocked by default, with a proxy mode enabled after checking support
