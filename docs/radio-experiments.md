@@ -157,7 +157,9 @@ Only the user's own chosen datasets are stored locally, in root-only runtime fil
   samples, and Windows returned 14 consecutive fresh target-city positions with
   source `Satellite`. After removal, a fresh `WiFi` position returned. This is a
   successful local sensor test, not a radio result or a guarantee for every app.
-  Proxy synchronization remains unimplemented. The vendor uninstaller returned
+  A later run resolved the current proxy's coordinates at startup; Windows and
+  the tested browser returned those coordinates with fresh timestamps. Continuous
+  synchronization after proxy changes remains unimplemented. The vendor uninstaller returned
   an error after device removal; removal was checked separately, and the driver
   package can remain in DriverStore. See [Windows evidence](windows-location.md).
   The vendor offers evaluation licensing; redistribution has separate terms.

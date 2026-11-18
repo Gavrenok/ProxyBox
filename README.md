@@ -486,8 +486,11 @@ and reported accuracy of 137–158 m.
 A separate local Windows sensor test **did** change the native Windows location
 API to the test city: GPSDirect supplied 14 consecutive fresh target positions.
 The temporary device was removed and a fresh Wi-Fi position returned afterwards.
-This requires software on the PC; automatic proxy synchronization and individual
-applications are not yet validated. [Windows test details](docs/windows-location.md).
+A later test resolved the current proxy's coordinates at startup: both Windows
+and the tested browser's Geolocation API returned Dortmund, with an advancing
+result timestamp. This requires software on the PC. Continuous synchronization
+after proxy changes and other applications are not yet validated.
+[Windows test details](docs/windows-location.md).
 
 [Adapter instructions, evidence, limitations and client test procedure](docs/radio-experiments.md).
 Existing receipt-based installations need the documented `--update-network`
