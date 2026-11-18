@@ -192,10 +192,12 @@ from your router to the internet.
 
 Open **VPS** and enter the server's public IPv4 address, SSH port, user and
 password. Ubuntu/Debian with Python 3 and root (or passwordless sudo) is required.
-Leave the service port blank to choose an available port. Click **Set up server**.
+Leave the service port blank to retain an existing instance's port or choose an
+available TCP/UDP port for a new instance. Click **Set up server**.
 The panel installs its SSH dependency on the Pi if needed, then provisions an
-independent encrypted Shadowsocks service on the VPS and verifies the exit.
-An existing proxy stays selected; if none is selected, the verified server is
+independent encrypted Shadowsocks service on the VPS and verifies both HTTPS
+and a UDP STUN round trip. An existing library proxy stays selected; if the
+server is already active or no proxy is selected, the verified server is
 activated. The SSH password is used for this operation and is not saved.
 
 **Turn off proxy / Use server now** selects your configured VPS. Applying a
@@ -207,19 +209,31 @@ blocked-default behavior.
 Setup creates its own `geobox-egress-<instance>.service` and configuration under
 `/etc/geobox-egress/`; it does not rewrite SSH, default routes or existing
 services. Package upgrades/removals found in the install plan stop setup.
-An active UFW receives one rule for the chosen TCP port. A provider-side cloud
-firewall may still need that port opened. If the exit check fails, a newly
+An active UFW receives rules for the chosen TCP and UDP service port. A provider-side
+cloud firewall may still need both opened. If the exit check fails, a newly
 created GeoBox service is removed and the previous selection stays active.
 If cleanup cannot finish, the panel reports it; retrying reuses the same instance.
-The distribution package may remain installed after rollback.
+The distribution package may remain installed after rollback. Upgrading an existing
+TCP-only instance keeps a rollback snapshot until UDP is verified; failure restores
+that instance's previous TCP configuration. Other server services are not restarted.
 
 The first observed SSH host key is trusted and pinned; later changes stop setup.
 Use the password form only through your trusted management network. Settings
 backups include the tunnel credential, never the SSH password. Restore does not
 replace this Pi's existing SSH trust pins. Protect backups like proxy passwords.
 
-This uses the existing **TCP and DNS** data path. General client UDP remains
-blocked; IPv6 keeps its existing policy. It is not a full WireGuard VPN.
+When the managed server is selected and its UDP exit has been verified, **IPv4 TCP,
+UDP and DNS** use the server. This permits UDP games such as Dota 2, subject to
+the game's and server's network availability. Devices with a separate proxy or
+block assignment still have UDP blocked. Selecting a regular library proxy
+blocks client UDP again; there is no direct fallback. IPv6 keeps its existing
+policy, with IPv6 UDP blocked. ICMP is not tunneled by this mode.
+
+**Existing TCP-only installs:** update GeoBox, then submit **VPS → Set up server**
+again with the SSH password. The panel upgrades only its own service and checks
+UDP before enabling the client route. Select **Use server now** if a library
+proxy is active. If setup reports an unverified UDP exit, check the chosen UDP
+port in the provider firewall; merely updating the panel does not enable UDP.
 The VPS changes the exit IP, not your ISP bandwidth: a 100 Mbps internet link
 still limits a faster Wi-Fi adapter. Setup and activation were also verified on
 a live server: the connected Windows client's external IP matched the VPS.

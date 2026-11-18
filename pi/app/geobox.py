@@ -53,6 +53,7 @@ import lan  # noqa: E402
 import wifi_radio  # noqa: E402
 import i18n  # noqa: E402
 import vps as vpsmod  # noqa: E402
+import vps_udp as vpsudp  # noqa: E402
 
 ETC = os.environ.get('GEOBOX_ETC', '/etc/geobox')
 PROXY_FILE = os.path.join(ETC, 'proxy.json')
@@ -618,12 +619,12 @@ def exit_info(proxy_url, user=None, pw=None, timeout=15, scope=None):
 
 
 # ---------------------------------------------------------------- sing-box
-def build_config(proxy, ext=None, ipv6=False):
+def build_config(proxy, ext=None, ipv6=False, udp=False):
     """Логика:
     - всё, что приходит из Wi-Fi (через sbtun), уходит ТОЛЬКО в прокси;
     - DNS клиентов перехватывается и идёт через прокси (DoH 1.1.1.1), провайдер не светится;
     - IPv6 закрыт по умолчанию; через прокси разрешается после проверки;
-    - UDP и обращения в домашнюю сеть режутся;
+    - UDP разрешён только через проверенный VPS; обращения в домашнюю сеть режутся;
     - нет прокси - нет интернета (kill switch).
     ext - дополнения для отдельных устройств (модуль devices.py):
       {'outbounds': [...], 'dns_servers': [...], 'dns_rules': [...], 'route_rules': [...]}
@@ -644,9 +645,15 @@ def build_config(proxy, ext=None, ipv6=False):
         {'action': 'sniff'},
         {'inbound': ['dns-in'], 'action': 'hijack-dns'},
         {'protocol': 'dns', 'action': 'hijack-dns'},
-        {'network': 'udp', 'action': 'reject'},
         {'ip_is_private': True, 'action': 'reject'},
     ]
+    # Unknown device identities disable UDP entirely; every non-default device
+    # remains excluded even when its assigned proxy is missing.
+    excluded = ext.get('udp_exclusions', None if ext.get('has_overrides') or ext.get('route_rules') else [])
+    udp = bool(udp and proxy and proxy.get('origin') == 'vps' and excluded is not None)
+    if udp:
+        rules += vpsudp.exception_rules(excluded)
+    rules.append(dict(vpsudp.DENY))
     if not ipv6:
         rules.insert(0, {'ip_version': 6, 'action': 'reject'})
     rules += list(ext.get('route_rules', []))
@@ -656,6 +663,8 @@ def build_config(proxy, ext=None, ipv6=False):
     outbounds = [{'type': 'direct', 'tag': 'direct'}] + list(ext.get('outbounds', []))
     if proxy:
         outbounds.insert(0, dict(proxy['outbound'], tag='proxy'))
+        if udp:
+            outbounds.append(dict(proxy['outbound'], tag=vpsudp.TAG))
         dns_servers.insert(0, {'type': 'https', 'tag': 'remote', 'server': '1.1.1.1', 'detour': 'proxy'})
         dns_final, final = 'remote', 'proxy'
     else:
@@ -681,6 +690,7 @@ def devices_ext():
         devices = devmod.load(ETC)
         result = devmod.config_ext(devices, libmod.items_by_id(libmod.load(ETC)))
         result['has_overrides'] = any(not isinstance(d, dict) or d.get('mode') != 'default' for d in devices.values())
+        result['udp_exclusions'] = vpsudp.exclusions(devices)
         return result
 
 
@@ -710,7 +720,7 @@ def ipv6_candidate(proxy, mode=None):
 def write_config(proxy, path):
     with lib_lock:
         ipv6 = ip6policy.evaluate(load_ipv6(), proxy, devmod.load(ETC))['enabled']
-        base = build_config(proxy, devices_ext(), ipv6=ipv6)
+        base = build_config(proxy, devices_ext(), ipv6=ipv6, udp=vpsudp.enabled(vpsmod.load(ETC), proxy))
         items = libmod.load(ETC)['items']
     secret = fastmod.controller(load_json(SB_CONFIG, {})) or secrets.token_hex(32)
     # A bad unused imported node must not prevent a valid current proxy from working.
@@ -1391,14 +1401,17 @@ def action_vps_setup(fields):
                 pins['%s:%d' % (intent['host'], intent['ssh_port'])] = intent['fingerprint']
                 write_private(pins_path, json.dumps(pins))
             candidate = vpsmod.provision(fields, previous,
-                lambda proxy: bool(probe_outbound(proxy['outbound'], proxy['secrets'])[0]), pins, remember)
+                lambda proxy: bool(probe_outbound(proxy['outbound'], proxy['secrets'])[0]), pins, remember,
+                verify_udp=vpsudp.probe)
             # Save a verified standby. It only becomes active by an explicit switch.
             write_private(os.path.join(ETC, 'vps.json'), json.dumps(candidate))
             try:
                 os.unlink(pending_path)
             except FileNotFoundError:
                 pass
-            if not load_proxy():
+            active = load_proxy()
+            if not active or (saved and active.get('origin') == 'vps'
+                              and active.get('outbound') == saved.get('proxy', {}).get('outbound')):
                 result = switch_proxy(candidate['proxy'])
                 if not result['ok']:
                     return ('err', result['message'])
@@ -1675,7 +1688,7 @@ def action_udp_diagnostics(session, client_ip):
         with lib_lock:
             before = audit_signature()
             proxy, scope = client_proxy(client_ip)
-        report = udpmod.probe(proxy)
+        report = vpsudp.probe(proxy['outbound']) if proxy and proxy.get('origin') == 'vps' else udpmod.probe(proxy)
         after = audit_signature()
         report.update(scope=scope, stale=before != after)
         with sess_lock:

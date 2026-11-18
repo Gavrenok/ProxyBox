@@ -17,6 +17,7 @@ import subprocess
 import time
 
 import fastswitch
+import vps_udp
 
 TITLES = {
     'config_dns_capture': 'Перехват обычного DNS',
@@ -202,6 +203,9 @@ def _policy_checks(config, devices):
     if shaped is None:
         return [_check(key, 'unknown', 'Структура конфигурации не распознана.') for key in keys]
     route, dns, rules, dns_rules, outbound_list, server_list, inbounds = shaped
+    udp_exceptions = vps_udp.audited_exceptions(config, devices)
+    # Keep malformed/misordered exceptions visible to the conservative audit.
+    rules = [rule for index, rule in enumerate(rules) if index not in udp_exceptions]
     outbound_map, servers = _unique_map(outbound_list), _unique_map(server_list)
     result = []
     inbound_pos = _position(rules, inbound=['dns-in'], action='hijack-dns')
@@ -262,6 +266,8 @@ def _policy_checks(config, devices):
                 # DNS packet before the later block or IPv4 device policy.
                 status = _worst([status, 'warn'])
         result.append(_check(key, status,
+            'IPv4 UDP идёт через тот же VPS; отдельные назначения устройств и остальные UDP-пакеты заблокированы.'
+            if key == 'config_udp' and status == 'pass' and udp_exceptions else
             'Запрет стоит до правил направления клиентского трафика.' if status == 'pass'
             else 'Ожидаемый запрет отсутствует, ограничен условием или обходится более ранним правилом.'
             if status == 'warn' else 'Порядок правил содержит неподдерживаемую конструкцию.',

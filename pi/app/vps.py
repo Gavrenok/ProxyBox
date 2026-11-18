@@ -13,6 +13,7 @@ import os
 import importlib
 import subprocess
 import time
+import vps_udp
 
 
 class SetupError(Exception):
@@ -81,12 +82,15 @@ def profile(value):
                 or outbound.get('method') != 'chacha20-ietf-poly1305'
                 or outbound.get('server') != host or proxy.get('origin') != 'vps'):
             raise ValueError()
-        return {'host': host, 'ssh_port': ssh_port, 'user': user,
+        result = {'host': host, 'ssh_port': ssh_port, 'user': user,
                 'owner': owner, 'fingerprint': identity,
                 'proxy': {'kind': 'ss', 'server': host, 'port': port, 'name': 'VPS',
                           'origin': 'vps', 'login': True, 'secrets': [secret],
                           'outbound': {'type': 'shadowsocks', 'server': host, 'server_port': port,
                                        'method': 'chacha20-ietf-poly1305', 'password': secret}}}
+        if vps_udp.valid_proof(value.get('udp'), result['proxy']['outbound']):
+            result['udp'] = {key: value['udp'][key] for key in ('status', 'fingerprint', 'mapped_ip', 'checked_at')}
+        return result
     except (ValueError, TypeError, KeyError, AttributeError):
         raise SetupError('Invalid saved server profile.') from None
 
@@ -134,7 +138,7 @@ def remote(client, user, data):
         if not response.get('ok'):
             allowed = {'root_required', 'unsupported_os', 'port_in_use', 'existing_instance_mismatch',
                        'incomplete_existing_installation', 'existing_shadowsocks_unit', 'ownership_not_confirmed',
-                       'package_changes_require_review'}
+                       'package_changes_require_review', 'udp_port_in_use', 'udp_firewall_rule_exists'}
             code = response.get('error', '')
             raise SetupError('Server setup failed: ' + (code if code in allowed else 'installation did not complete'))
         return response
@@ -142,14 +146,14 @@ def remote(client, user, data):
         channel.close()
 
 
-def provision(fields, previous, verify, pins=None, remember=None):
+def provision(fields, previous, verify, pins=None, remember=None, verify_udp=None):
     try:
-        return _provision(fields, previous, verify, pins, remember)
+        return _provision(fields, previous, verify, pins, remember, verify_udp)
     finally:
         fields['ssh_password'] = ''
 
 
-def _provision(fields, previous, verify, pins=None, remember=None):
+def _provision(fields, previous, verify, pins=None, remember=None, verify_udp=None):
     """Password stays in this job only. Pin SSH identity before authenticating.
 
     On first use, the observed identity is trusted and returned for persistence.
@@ -177,14 +181,22 @@ def _provision(fields, previous, verify, pins=None, remember=None):
         if remember:
             remember({'host': host, 'ssh_port': ssh_port, 'user': user, 'fingerprint': actual,
                       'owner': owner, 'proxy': {'outbound': {'password': secret}}})
-        data = {'owner': owner, 'secret': secret, 'port': port}
+        data = {'owner': owner, 'secret': secret, 'port': port, 'udp': verify_udp is not None}
         result = remote(client, user, data)
         port = int(result['port'])
         outbound = {'type': 'shadowsocks', 'server': host, 'server_port': port,
                     'method': 'chacha20-ietf-poly1305', 'password': secret}
         proxy = {'kind': 'ss', 'server': host, 'port': port, 'name': 'VPS', 'origin': 'vps',
                  'login': True, 'secrets': [secret], 'outbound': outbound}
-        if not verify(proxy):
+        proof = None
+        try:
+            tcp_ok = bool(verify(proxy))
+            if tcp_ok and verify_udp is not None and result.get('udp') is True:
+                proof = verify_udp(outbound)
+        except Exception:
+            tcp_ok = False
+        udp_ok = verify_udp is None or vps_udp.valid_proof(proof, outbound)
+        if not tcp_ok or not udp_ok:
             cleanup = 'Existing server service was left unchanged.'
             if result.get('created'):
                 try:
@@ -192,9 +204,19 @@ def _provision(fields, previous, verify, pins=None, remember=None):
                     cleanup = 'The new service was removed.'
                 except Exception:
                     cleanup = 'The new service could not be removed; inspect the GeoBox service on the server.'
+            elif result.get('udp_changed'):
+                try:
+                    remote(client, user, dict(data, op='rollback_udp'))
+                    cleanup = 'The existing TCP service was restored.'
+                except Exception:
+                    cleanup = 'Server rollback could not be confirmed. Retry setup to recover the saved TCP configuration.'
+            if tcp_ok and not udp_ok:
+                raise SetupError('UDP exit was not verified. Check UDP port %d in the server/cloud firewall. Client UDP stays blocked. %s' % (port, cleanup))
             raise SetupError('The server exit did not respond. Allow TCP port %d in the server/cloud firewall and retry. %s' % (port, cleanup))
+        if result.get('udp_changed'):
+            remote(client, user, dict(data, op='commit_udp'))
         return {'host': host, 'ssh_port': ssh_port, 'user': user, 'fingerprint': actual,
-                'owner': owner, 'proxy': proxy, 'configured_at': time.time()}
+                'owner': owner, 'proxy': proxy, 'configured_at': time.time(), 'udp': proof}
     except SetupError:
         raise
     except Exception:
@@ -213,8 +235,11 @@ def card(saved, active):
     intro = ('<div class="c"><h2>Server exit</h2><p>Proxy on → selected proxy. Proxy off → your server.</p>'
              '<p class="hint">This changes your public IP. Device location shared with apps and websites is separate: Windows needs a local location component; iPhone needs pairing and location synchronization. Server setup does not enable these features. Deny location permission to websites if you do not want to share device coordinates.</p>')
     if saved:
-        intro += '<p translate="no"><b>%s</b> · TCP %s</p><p>%s</p>' % (
-            esc(saved['host']), esc(saved['proxy']['port']), 'Server exit is active.' if current else 'Server is ready. The selected proxy remains active.')
+        ready = vps_udp.enabled(saved, saved.get('proxy'))
+        intro += '<p translate="no"><b>%s</b> · %s %s</p><p>%s</p>' % (
+            esc(saved['host']), 'TCP + UDP' if ready else 'TCP', esc(saved['proxy']['port']), 'Server exit is active.' if current else 'Server is ready. The selected proxy remains active.')
+        intro += '<p class="hint">%s</p>' % ('UDP exit verified. Games can use the server when it is selected. Devices with a separate proxy or block assignment keep UDP blocked.' if ready
+            else 'UDP is not enabled. Submit the server setup form again with the SSH password to upgrade and verify the existing service.')
         intro += '<p class="hint" translate="no">SSH %s</p><form method="post" action="/vps/use"><button>Use server now</button></form>' % esc(saved.get('fingerprint', ''))
     else:
         intro += '<p>No server configured.</p>'
@@ -224,11 +249,11 @@ def card(saved, active):
         ('ssh_port', 'SSH port', saved.get('ssh_port', 22), 'number', '22'),
         ('user', 'SSH user', saved.get('user', 'root'), 'text', 'root'),
         ('ssh_password', 'SSH password (used once)', '', 'password', ''),
-        ('port', 'Service TCP port (blank: choose a free port)', '', 'number', '32180')):
+        ('port', 'Service TCP/UDP port (blank: keep existing or choose a free port)', '', 'number', '32180')):
         intro += '<label>%s<input name="%s" type="%s" value="%s" placeholder="%s"%s></label>' % (
             label, key, kind, esc(value), placeholder, ' required' if key != 'port' else '')
     intro += ('<div class="f"><button>Set up server</button></div></form>'
-              '<p class="hint">Ubuntu/Debian with Python 3. Root or passwordless sudo. Installs an isolated encrypted Shadowsocks service and checks its exit. SSH, routes and existing services are preserved. Active UFW gets only a rule for the new TCP port. Cloud firewalls are managed by your provider. Setup can take several minutes.</p>'
+              '<p class="hint">Ubuntu/Debian with Python 3. Root or passwordless sudo. Installs or upgrades the isolated GeoBox Shadowsocks service and verifies TCP and UDP exits. SSH, routes and other services are preserved. Active UFW gets rules only for this service port. Cloud firewalls must allow this port over TCP and UDP. Setup can take several minutes.</p>'
               '<p class="hint">The SSH password is never saved. On first connection the SSH host key is trusted and pinned. Future key changes stop setup. Use this form only over a trusted management connection.</p>'
-              '<p class="hint">TCP traffic and DNS use the server. Client UDP remains blocked by the current GeoBox policy. A failed proxy never silently falls back to the server. Internet speed is still limited by your WAN connection.</p></div>')
+              '<p class="hint">When the verified server is selected, IPv4 TCP, UDP and DNS use it. Selecting a regular proxy blocks client UDP again. A failed exit never falls back to your home IP. Internet speed is still limited by your WAN connection.</p></div>')
     return intro

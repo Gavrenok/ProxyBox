@@ -222,7 +222,7 @@ def render(context, audit_result=None):
     udp_html = ('<div class="c"><h2>UDP у прокси</h2>%s'
                 '<form method="post" action="/diagnostics/udp"><div class="f">'
                 '<button type="submit" class="g">Проверить UDP прокси</button></div></form>'
-                '<div class="hint">Явный STUN-запрос с малины через назначенный этому устройству SOCKS5. '
+                '<div class="hint">Явный STUN-запрос с малины через назначенный этому устройству SOCKS5 или настроенный VPS. '
                 'Вне Wi-Fi GeoBox проверяется общий прокси. Внешний STUN-сервис увидит адрес выхода. '
                 'Это проверка возможности прокси, а не WebRTC телефона. Она не включает UDP в настройках '
                 'и не доказывает отсутствие утечек. Кнопка обновляет страницу.</div></div>') % udp_html
