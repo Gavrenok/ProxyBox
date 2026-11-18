@@ -147,7 +147,16 @@ Only the user's own chosen datasets are stored locally, in root-only runtime fil
 - [GPSDirect](https://www.gpssensordrivers.com/) is a separate vendor's Windows
   sensor driver, documenting simulated/fixed positions and a TCP NMEA source.
   It is a candidate for a local Windows companion, not a feature shipped here.
-  Installation, native location behavior and proxy synchronization remain untested.
+  In an initial local trial on Windows build 26200.9974, the signed v2 driver
+  installed and the test device was removed afterwards. However, it never
+  connected to the loopback NMEA source (zero connections/frames sent), while
+  Windows continued returning a Wi-Fi location. That run is inconclusive about
+  accepting a simulated GPS fix: no input reached the driver. The first probe
+  also used default accuracy instead of an explicit high-accuracy consumer.
+  A revised diagnostic records source delivery and position freshness with a
+  persistent high-accuracy request. Success and proxy synchronization remain
+  unverified. The vendor uninstaller returned an error after device removal;
+  removal was checked separately, and the driver package can remain in DriverStore.
   The vendor offers evaluation licensing; redistribution has separate terms.
 - [Chrome DevTools Sensors](https://developer.chrome.com/docs/devtools/sensors)
   provides a browser testing override. This does not fulfill a requirement for
