@@ -231,35 +231,104 @@ sudo systemctl restart geobox-panel
 This downloads [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) and
 dependencies. The main version is pinned; a complete dependency lock is still pending.
 
-### B. Pair the phone once
+### B. Enable Developer Mode
 
-1. On iPhone, enable **Settings → Privacy & Security → Developer Mode**.
-   Confirm it after a restart if requested. If that option is missing, stop here;
-   this guide does not establish a way to enable it on every unprepared phone.
-2. Join **My ProxyBox** and leave the phone unlocked.
-3. In the panel, open **Mimic → Подключить iPhone** (Connect iPhone).
-4. On the tested iOS 27 setup, pairing was under **Privacy & Security → Developer
-   Mode → the pairing section**. The separate **Developer → Paired Computers**
-   screen stayed empty. Menu names may differ on other versions.
-5. Select GeoBox and enter the six-digit PIN displayed in the panel. The pairing
-   window lasts five minutes; the PIN is only shown to the session that started it.
+1. On iPhone, open **Settings → Privacy & Security → Developer Mode**.
+2. Turn the switch on and tap **Restart**.
+3. Unlock the phone after restarting. Confirm **Turn On** and enter the iPhone's
+   own passcode if requested.
+4. Return to Settings and check that the mode is enabled. The GeoBox six-digit
+   pairing code is not needed yet.
 
-### C. Apply coordinates — and turn on automatic updates if wanted
+**If Developer Mode is missing:** Apple makes it visible after starting computer
+pairing or when the device was previously paired. The official route is to connect
+the unlocked iPhone to a Mac with Xcode, start pairing in Xcode's device list,
+then follow the steps above.
+[Apple's instructions](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device).
+
+**Without a Mac, USB preparation can be performed on the Pi itself.** You need
+the optional component from step A and a data-capable USB cable:
+
+1. In SSH on the Pi, install the USB service if it is not already installed:
+
+   ```sh
+   sudo apt-get update
+   sudo apt-get install usbmuxd
+   ```
+
+2. Connect **only the intended iPhone** to the Pi by USB, unlock it, and approve
+   **Trust This Computer?** using the phone's passcode.
+3. In SSH on the Pi, run:
+
+   ```sh
+   sudo /opt/geobox-ios/venv/bin/python -m pymobiledevice3 amfi reveal-developer-mode
+   ```
+
+4. If the trust prompt appeared only after the command, approve it and retry.
+   This reveals the switch; it does not turn Developer Mode on. Complete the
+   manual enable/restart steps above. USB can then be disconnected.
+
+The command is present in pinned
+[pymobiledevice3 11.49.0](https://github.com/doronz88/pymobiledevice3/blob/v11.49.0/pymobiledevice3/cli/amfi.py).
+This fallback was checked against source; we have not repeated the complete flow
+on a fresh, unprepared iPhone in our lab. Keep the exact error if it fails; do not
+remove the passcode or reset the phone. USB trust and the following Wi-Fi pairing
+are separate steps: USB trust alone does not add the phone to Mimic.
+
+### C. Pair the iPhone and obtain the six-digit code
+
+1. Join the **Pi's Wi-Fi**, using the SSID chosen in the setup wizard (default:
+   **My ProxyBox**). Keep the phone unlocked.
+2. On a computer or second device, open the Pi's panel, sign in, and press
+   **Mimic → Подключить iPhone** (Connect iPhone). Keep that tab open.
+3. Wait for **Выбери GeoBox на iPhone** (Select GeoBox on iPhone). No code may be
+   visible yet: the panel is waiting for the phone to initiate pairing.
+4. On the tested iOS 27 setup, the pairing section was inside **Settings →
+   Privacy & Security → Developer Mode**. Open it and select **GeoBox**. The
+   separate **Developer → Paired Computers** screen stayed empty on that setup.
+   Menu names and availability can differ on other iOS versions.
+5. After selecting GeoBox, the **computer's panel displays a six-digit PIN**.
+   Enter those digits **in the prompt on the iPhone**. It is not an SMS code,
+   a code you invent, your Wi-Fi password, or the phone's unlock passcode.
+6. Wait for **iPhone подключён** (iPhone connected) and its card in Mimic.
+
+The pairing window lasts at most **five minutes**. Only the panel session that
+started it can see the PIN; another browser or private window may not show it.
+If the window expires or pairing fails, cancel, start again, and use the new PIN.
+The old PIN is not retained.
+
+If GeoBox does not appear, check Developer Mode is enabled **after** reboot,
+the phone is on the Pi's Wi-Fi, and the panel's pairing window is still active.
+If GeoBox was selected but no PIN appears, read the status in the same panel tab.
+USB preparation in step B does not guarantee that every iOS version exposes the
+new wireless pairing menu; that compatibility has not been established.
+
+### D. Apply coordinates — and turn on automatic updates if wanted
 
 1. Under the paired phone, press **По текущему прокси** (Use current proxy).
 2. Wait for the result. The first command may download a developer image and
    contact Apple; keep the phone unlocked and on the hotspot.
-3. Open [BrowserLeaks Geolocation](https://browserleaks.com/geo) on that phone,
-   allow location access and check the new coordinates.
+3. On **that paired phone**, open Apple Maps and tap the current-location arrow.
+   Separately, open [BrowserLeaks Geolocation](https://browserleaks.com/geo),
+   allow location access, press **Get Current Position**, and check the new
+   result's timestamp.
 4. **Want coordinates to follow proxy changes? Press Включить автообновление
    (Enable automatic updates). Verify the line says включено (enabled).**
 
 **A one-time “Use current proxy” command does not enable automatic updates.**
+Enabling auto-update also schedules an attempt with the current proxy profile.
 Without auto-update, the previous coordinates can remain after changing proxies.
 When the phone is unavailable, a new location may not be delivered immediately.
 An unknown command outcome stops automatic retries; inspect the phone and panel status.
 Auto-update follows proxy-profile changes, not every invisible IP rotation within
 the same provider configuration.
+
+Coordinates come from IP geolocation of the phone's assigned proxy, or the
+default proxy when no assignment exists. A failed proxy or geolocation lookup
+can prevent a new command. Restore proxy connectivity first, then press **Use
+current proxy** and inspect the status. IP-database accuracy is not GPS accuracy.
+An unpaired phone or a Windows computer does not receive this command; disconnecting
+a second phone is not a required setup step.
 
 **Вернуть реальную** (Restore real location) queues a reset and disables auto-update.
 Simply disabling auto-update does not clear the last simulated coordinates.
@@ -407,9 +476,12 @@ faster Wi-Fi or greater range.
 A separate idle USB radio can transmit a user-supplied beacon dataset for
 10–300 seconds, with Stop and automatic cleanup. It is off by default.
 **System location spoofing has not been demonstrated on the tested unpaired
-iPhone; Android, Windows and macOS remain unvalidated.** The iPhone received the
+iPhone or Windows client; Android and macOS have not been tested.** The iPhone received the
 beacons and calculated target Wi-Fi positions, but its location fusion rejected
 them. Absence of surrounding networks is not a proven fix.
+During a subsequent live beacon trial, Windows scanned up to 25 of 40 test BSSIDs,
+but its native location API still returned the original city with source `WiFi`
+and reported accuracy of 137–158 m.
 
 [Adapter instructions, evidence, limitations and client test procedure](docs/radio-experiments.md).
 Existing receipt-based installations need the documented `--update-network`

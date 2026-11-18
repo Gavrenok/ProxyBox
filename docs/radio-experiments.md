@@ -78,8 +78,15 @@ not a new successful geolocation test.
 | Unpaired iPhone, tested OS build 24B156 | AirPort saw all 40 test BSSIDs. Location logs contained target-city Wi-Fi fixes and explicit fusion rejection. Maps remained in the original city. | Successful system location change; behavior in an RF shield; other iPhones/builds |
 | Paired iPhone | Separate developer-service location simulation had previously changed its location. | This is not evidence for radio spoofing; pairing is a different feature. |
 | Android | No controlled client test | Beacon visibility and system location outcome |
-| Windows | Browser location was checked after the transmitter stopped | Outcome during a synchronized RF trial |
+| Windows | During a subsequent live beacon trial, scans matched up to 25/40 test BSSIDs. Native Windows Geolocator returned the original city, source `WiFi`, reported accuracy 137–158 m. | Successful system location change; reason for rejecting or not using the target environment |
 | macOS | No controlled client test | Beacon visibility and system location outcome |
+
+The Windows result uses the native `Windows.Devices.Geolocation.Geolocator`
+API, separately from BrowserLeaks. Both calls requested zero maximum cache age
+and a 20-second timeout. Result timestamps were close to the request times;
+one preceded its request by about 0.8 seconds. Scans are snapshots and did not
+show all 40 addresses at once. This is a negative result under the tested
+conditions, not proof of incompatibility with every Windows device.
 
 In the reviewed iPhone logging window, the Wi-Fi provider calculated target fixes
 with roughly 21–24 m reported uncertainty. The logs included
@@ -120,6 +127,35 @@ location change. Publish platform-specific outcomes, not blanket compatibility.
 The implementation uses the public NetworkManager interface:
 [nmcli reference](https://networkmanager.dev/docs/api/latest/nmcli.html).
 Only the user's own chosen datasets are stored locally, in root-only runtime files.
+
+## Existing approaches reviewed
+
+- [SkyLift](https://github.com/adamhrv/skylift) is a public beacon-spoofing
+  implementation with historical phone demonstrations. Its
+  [January 2025 discussion](https://github.com/adamhrv/skylift/issues/20) includes
+  the author's request for current success reports. Neither establishes success
+  on our current Windows/iPhone setup. A forum claim about closed firmware is
+  not a reproducible implementation or a reason to mark this feature supported.
+- [Windows GeolocationProvider](https://learn.microsoft.com/en-us/uwp/api/windows.devices.geolocation.provider.geolocationprovider)
+  supports an override for consumers of Windows location services. Microsoft
+  documents a `runFullTrust` capability and a Limited Access Feature token.
+  A direct call on our Windows build 26200.9974 returned `AccessDenied`; it did
+  not change the location. This is a local software mechanism, not a router setting.
+- [FakeGPS](https://github.com/juliankay/FakeGPS) is an older virtual Windows GPS
+  driver. Its author marks it unmaintained and requires test-signing mode.
+  It has not been installed or validated on our machine.
+- [GPSDirect](https://www.gpssensordrivers.com/) is a separate vendor's Windows
+  sensor driver, documenting simulated/fixed positions and a TCP NMEA source.
+  It is a candidate for a local Windows companion, not a feature shipped here.
+  Installation, native location behavior and proxy synchronization remain untested.
+  The vendor offers evaluation licensing; redistribution has separate terms.
+- [Chrome DevTools Sensors](https://developer.chrome.com/docs/devtools/sensors)
+  provides a browser testing override. This does not fulfill a requirement for
+  Windows system location and is not counted as radio success.
+
+No reviewed source supplies a verified, drop-in fix for our negative native
+Windows result. A Windows companion would require local installation and its own
+explicit controls; joining the Pi's Wi-Fi would not itself install or enable it.
 
 ## Existing installations
 
