@@ -78,7 +78,7 @@ not a new successful geolocation test.
 | Unpaired iPhone, tested OS build 24B156 | AirPort saw all 40 test BSSIDs. Location logs contained target-city Wi-Fi fixes and explicit fusion rejection. Maps remained in the original city. | Successful system location change; behavior in an RF shield; other iPhones/builds |
 | Paired iPhone | Separate developer-service location simulation had previously changed its location. | This is not evidence for radio spoofing; pairing is a different feature. |
 | Android | No controlled client test | Beacon visibility and system location outcome |
-| Windows | During a subsequent live beacon trial, scans matched up to 25/40 test BSSIDs. Native Windows Geolocator returned the original city, source `WiFi`, reported accuracy 137–158 m. | Successful system location change; reason for rejecting or not using the target environment |
+| Windows, Wi-Fi beacon trial | During a subsequent live beacon trial, scans matched up to 25/40 test BSSIDs. Native Windows Geolocator returned the original city, source `WiFi`, reported accuracy 137–158 m. | Successful radio-based system location change; reason for rejecting or not using the target environment |
 | macOS | No controlled client test | Beacon visibility and system location outcome |
 
 The Windows result uses the native `Windows.Devices.Geolocation.Geolocator`
@@ -153,18 +153,22 @@ Only the user's own chosen datasets are stored locally, in root-only runtime fil
   Windows continued returning a Wi-Fi location. That run is inconclusive about
   accepting a simulated GPS fix: no input reached the driver. The first probe
   also used default accuracy instead of an explicit high-accuracy consumer.
-  A revised diagnostic records source delivery and position freshness with a
-  persistent high-accuracy request. Success and proxy synchronization remain
-  unverified. The vendor uninstaller returned an error after device removal;
-  removal was checked separately, and the driver package can remain in DriverStore.
+  A later trial held a high-accuracy consumer open: the source sent 74 NMEA
+  samples, and Windows returned 14 consecutive fresh target-city positions with
+  source `Satellite`. After removal, a fresh `WiFi` position returned. This is a
+  successful local sensor test, not a radio result or a guarantee for every app.
+  Proxy synchronization remains unimplemented. The vendor uninstaller returned
+  an error after device removal; removal was checked separately, and the driver
+  package can remain in DriverStore. See [Windows evidence](windows-location.md).
   The vendor offers evaluation licensing; redistribution has separate terms.
 - [Chrome DevTools Sensors](https://developer.chrome.com/docs/devtools/sensors)
   provides a browser testing override. This does not fulfill a requirement for
   Windows system location and is not counted as radio success.
 
-No reviewed source supplies a verified, drop-in fix for our negative native
-Windows result. A Windows companion would require local installation and its own
-explicit controls; joining the Pi's Wi-Fi would not itself install or enable it.
+The local Windows sensor trial establishes a separate working path on the tested
+machine. It does not resolve the negative Wi-Fi beacon result. A Windows companion
+would require local installation and its own explicit controls; joining the Pi's
+Wi-Fi would not itself install or enable it.
 
 ## Existing installations
 

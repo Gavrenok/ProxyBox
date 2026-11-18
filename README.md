@@ -475,13 +475,19 @@ faster Wi-Fi or greater range.
 
 A separate idle USB radio can transmit a user-supplied beacon dataset for
 10–300 seconds, with Stop and automatic cleanup. It is off by default.
-**System location spoofing has not been demonstrated on the tested unpaired
+**Wi-Fi beacon-based system location spoofing has not been demonstrated on the tested unpaired
 iPhone or Windows client; Android and macOS have not been tested.** The iPhone received the
 beacons and calculated target Wi-Fi positions, but its location fusion rejected
 them. Absence of surrounding networks is not a proven fix.
 During a subsequent live beacon trial, Windows scanned up to 25 of 40 test BSSIDs,
 but its native location API still returned the original city with source `WiFi`
 and reported accuracy of 137–158 m.
+
+A separate local Windows sensor test **did** change the native Windows location
+API to the test city: GPSDirect supplied 14 consecutive fresh target positions.
+The temporary device was removed and a fresh Wi-Fi position returned afterwards.
+This requires software on the PC; automatic proxy synchronization and individual
+applications are not yet validated. [Windows test details](docs/windows-location.md).
 
 [Adapter instructions, evidence, limitations and client test procedure](docs/radio-experiments.md).
 Existing receipt-based installations need the documented `--update-network`
