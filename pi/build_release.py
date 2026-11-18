@@ -18,6 +18,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_FILES = (
+    'i18n.py', 'translations.json',
+    'vps.py', 'vps_remote.py',
     'lan.py', 'wifi_radio.py',
     'failover_policy.py', 'proxy_checks.py', 'setup_panel.py',
     'connectivity.py',

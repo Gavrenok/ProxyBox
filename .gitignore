@@ -19,6 +19,9 @@ library.json
 devices.json
 sing-box.json
 switch-pending.json
+vps.json
+vps-pending.json
+vps-hosts.json
 *backup*.json
 .env
 .env.*

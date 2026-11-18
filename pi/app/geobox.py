@@ -51,6 +51,8 @@ import proxy_checks  # noqa: E402
 import setup_panel  # noqa: E402
 import lan  # noqa: E402
 import wifi_radio  # noqa: E402
+import i18n  # noqa: E402
+import vps as vpsmod  # noqa: E402
 
 ETC = os.environ.get('GEOBOX_ETC', '/etc/geobox')
 PROXY_FILE = os.path.join(ETC, 'proxy.json')
@@ -781,7 +783,8 @@ def switcher():
     return swmod.Switcher(SB_CONFIG, PROXY_FILE, os.path.join(ETC, 'switch-pending.json'),
                          apply, verify_switch_exit, _restart_tunnel, _stop_tunnel,
                          (os.path.join(ETC, 'devices.json'), devmod.HOSTS_FILE,
-                          os.path.join(ETC, 'library.json'), SETTINGS_FILE, ipv6_path()),
+                          os.path.join(ETC, 'library.json'), SETTINGS_FILE, ipv6_path(),
+                          os.path.join(ETC, 'vps.json')),
                          lambda: run(['systemctl', 'reload', 'dnsmasq'])[0] == 0)
 
 
@@ -966,6 +969,8 @@ def failover():
     if not lib.get('failover'):
         return
     original = load_proxy()
+    if original and original.get('origin') == 'vps':
+        return  # A server failure must not silently activate a rented proxy.
     cur = _lib_item_for(original)
     rules = failpolicy.policy(lib)
     if failpolicy.cooling_down(lib, rules):
@@ -1258,7 +1263,7 @@ def export_backup():
     with lib_lock:
         data = {'geobox_backup': BACKUP_VERSION, 'created': time.strftime('%Y-%m-%d %H:%M:%S'),
                 'proxy': load_proxy(), 'library': libmod.load(ETC), 'devices': devmod.load(ETC),
-                'wifi': wifi_settings(with_secret=True), 'settings': load_settings(),
+                'wifi': wifi_settings(with_secret=True), 'settings': load_settings(), 'vps': vpsmod.load(ETC),
                 'ipv6': {'mode': load_ipv6().get('mode', 'block')}}
     data['settings'].pop('known_macs', None)
     return json.dumps(data, ensure_ascii=False, indent=1)
@@ -1283,6 +1288,15 @@ def _action_restore_locked(raw, with_wifi):
         return ('err', 'Это не файл настроек GeoBox (не JSON).')
     if not isinstance(d, dict) or d.get('geobox_backup') != BACKUP_VERSION:
         return ('err', 'Это не файл настроек GeoBox или он от другой версии.')
+    try:
+        server = vpsmod.profile(d.get('vps'))
+        if server:
+            identity = '%s:%d' % (server['host'], server['ssh_port'])
+            pin = (load_json(os.path.join(ETC, 'vps-hosts.json'), {}) or {}).get(identity)
+            if pin and pin != server['fingerprint']:
+                return ('err', 'The saved SSH host key does not match this Pi. Check the server identity.')
+    except vpsmod.SetupError as exc:
+        return ('err', str(exc))
     lib = d.get('library') or {}
     if not isinstance(lib, dict) or not isinstance(lib.get('items', []), list):
         return ('err', 'В файле испорчен список прокси.')
@@ -1309,6 +1323,8 @@ def _action_restore_locked(raw, with_wifi):
         return ('err', 'В файле испорчен общий прокси.')
     with lib_lock:
         def prepare():
+            if 'vps' in d:
+                write_private(os.path.join(ETC, 'vps.json'), json.dumps(server))
             restored_policy = failpolicy.policy(lib)
             libmod.save(ETC, {'items': items, 'failover': bool(lib.get('failover')) and restored_policy is not None,
                               'failover_policy': restored_policy or failpolicy.validate()})
@@ -1348,10 +1364,58 @@ def _action_restore_locked(raw, with_wifi):
 
 def action_proxy_off():
     with apply_lock:
-        result = switch_proxy(None)
+        fallback = vpsmod.load(ETC).get('proxy')
+        result = switch_proxy(fallback)
         if not result['ok']:
             return ('err', result['message'])
+    if fallback:
+        return ('ok', 'Server exit is active. Proxy disabled; individual device assignments are unchanged.')
     return ('ok', 'Общий прокси выключен. Устройства со своим прокси продолжают работать; остальные без интернета.')
+
+
+def action_vps_setup(fields):
+    # No credentials in sessions, flash messages, logs or shell arguments.
+    try:
+        with apply_lock:
+            problem = recover_before_mutation()
+            if problem:
+                return ('err', problem)
+            saved = vpsmod.load(ETC)
+            pending_path = os.path.join(ETC, 'vps-pending.json')
+            pins_path = os.path.join(ETC, 'vps-hosts.json')
+            pending = load_json(pending_path, {}) or {}
+            previous = pending if pending.get('host') == fields.get('host') else saved
+            pins = load_json(pins_path, {}) or {}
+            def remember(intent):
+                write_private(pending_path, json.dumps(intent))
+                pins['%s:%d' % (intent['host'], intent['ssh_port'])] = intent['fingerprint']
+                write_private(pins_path, json.dumps(pins))
+            candidate = vpsmod.provision(fields, previous,
+                lambda proxy: bool(probe_outbound(proxy['outbound'], proxy['secrets'])[0]), pins, remember)
+            # Save a verified standby. It only becomes active by an explicit switch.
+            write_private(os.path.join(ETC, 'vps.json'), json.dumps(candidate))
+            try:
+                os.unlink(pending_path)
+            except FileNotFoundError:
+                pass
+            if not load_proxy():
+                result = switch_proxy(candidate['proxy'])
+                if not result['ok']:
+                    return ('err', result['message'])
+                return ('ok', 'Server configured and exit verified. Server exit is active.')
+            return ('ok', 'Server configured and exit verified. Turn off the proxy or select Use server now to switch.')
+    except vpsmod.SetupError as exc:
+        return ('err', str(exc))
+    except Exception:
+        return ('err', 'Server setup could not finish. The previous active route is retained.')
+    finally:
+        fields['ssh_password'] = ''
+
+
+def action_vps_use():
+    if not vpsmod.load(ETC):
+        return ('err', 'Configure a server first.')
+    return action_proxy_off()
 
 
 # ---------------------------------------------------------------- Wi-Fi
@@ -1767,14 +1831,63 @@ form.dv select{min-width:160px;padding:6px}
 form.dv button{padding:6px 10px}
 textarea{resize:vertical;min-height:44px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
 .res{border-color:#3b82f6}
+.language-switch{display:flex;justify-content:flex-end;gap:4px;padding:12px 0 0}.language-switch button{padding:3px 7px;font-size:11px}
+/* Compact console; shared form primitives also serve the setup wizard. */
+body{background:#111416;color:#e2e5e7;font-size:14px;line-height:1.5;color-scheme:dark}
+.w{max-width:1440px;padding:0 24px;margin:auto}
+.w:has(>h1){max-width:760px;padding:24px}
+.app-shell{display:grid;grid-template-columns:190px minmax(0,1fr);min-height:100vh;gap:32px}
+.sidebar{position:relative;border-right:1px solid #2b3033;padding:32px 20px 24px 0;display:flex;flex-direction:column}
+.brand{font-size:23px;font-weight:650;letter-spacing:-.7px;text-decoration:none;color:#f0f2f3}
+.brand span{display:block;font-size:9px;color:#859096;letter-spacing:1.8px;margin-top:2px;font-weight:500}
+.main-nav{display:flex;flex-direction:column;gap:4px;margin:38px 0}
+.main-nav a{display:flex;justify-content:space-between;color:#a9b2b8;text-decoration:none;border-radius:4px;padding:9px 12px;border-left:2px solid transparent}
+.main-nav a.on{background:#202729;color:#f1f4f4;border-left-color:#79bbaa}
+.main-nav a:hover{background:#1d2225;color:#fff}.n{font-size:12px;color:#88969a}
+.signout{margin-top:auto}.workspace{min-width:0;padding:30px 0 40px}
+.page-head{display:flex;justify-content:space-between;align-items:center;gap:20px;margin:0 0 28px}
+.page-head h1{font-size:27px;letter-spacing:-.6px;margin:3px 0 0;font-weight:600}
+.eyebrow{font-size:12px;color:#829096;margin:0}
+.c{border:1px solid #2c3337;border-radius:5px;background:#171c1f;padding:20px;margin-bottom:16px}
+.c h2{font-size:15px;color:#dae0e2;letter-spacing:0;text-transform:none;margin-bottom:16px}
+summary{cursor:pointer;font-weight:550;color:#dbe2e5}details[open]>summary{margin-bottom:18px}
+input[type=text],input[type=password],input[type=number],select,textarea{padding:8px 10px;border-radius:4px;border-color:#384147;background:#111618;font-size:13px}
+button,a.btn{border:1px solid transparent;border-radius:4px;padding:7px 12px;background:#80bbaa;color:#10251f;font-size:13px;font-weight:550;text-decoration:none}
+button.g,a.btn{background:#232b30;border-color:#394349;color:#d5dfe3}button:hover,a.btn:hover{filter:brightness(1.12)}
+a{color:#9cc8c1}a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #94d5c6;outline-offset:3px}
+.hint,.k{color:#9caab1}.hint{line-height:1.6;font-size:12px}.ok{color:#8cc7a5}.err{color:#ee9e93}.warn{color:#d8bd83}
+.msg{background:#1b2225;border-radius:4px;border-color:#364247}.f{align-items:center}
+.subnav{display:flex;gap:22px;border-bottom:1px solid #354047;margin:0 0 22px;overflow:auto}
+.subnav a{white-space:nowrap;text-decoration:none;color:#99a8af;padding:0 0 11px}.subnav [aria-current]{color:#edf2f3;border-bottom:2px solid #80bbaa}
+.library-search{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1fr) auto;gap:10px;align-items:end}
+.library-search>label{grid-column:1/-1;color:#9caab1;font-size:12px}.library-search .f{margin:0}.library-search .cb{white-space:nowrap;font-size:12px}
+.list-meta{display:flex;justify-content:space-between;color:#92a1a9;font-size:12px;margin:18px 0 12px}
+.library-workspace{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:22px;align-items:start}
+.proxy-table td,.proxy-table th{padding:11px 9px;font-size:12px;border-color:#2c353a}
+.proxy-table td{white-space:normal;overflow-wrap:anywhere}.proxy-table th{font-size:11px;color:#85969e;font-weight:500}
+.proxy-table .selected{background:#24332f}.proxy-title{font-weight:600;text-decoration:none;color:#e0e8e9;font-size:13px}
+.proxy-table small{display:block;font-size:11px;color:#94a5ad;margin-top:3px}.badge{display:inline-block;font-size:10px;background:#31493e;color:#a3d3b3;padding:1px 5px;border-radius:3px;margin-left:4px}
+.proxy-inspector{padding-left:20px;border-left:1px solid #354147;overflow-wrap:anywhere;font-size:13px}
+.proxy-inspector .li{padding-top:0}.proxy-inspector .f{gap:6px}.proxy-inspector label{display:block;margin-top:10px}
+.pagination{display:flex;gap:12px;align-items:center;justify-content:flex-end;font-size:12px;color:#a0aeb4;margin-top:15px}
+.pagination a{padding:5px 9px}.row{padding:9px 0;border-bottom:1px solid #273035}.row:last-of-type{border:0}
+.route-bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 16px;color:#a8b7bd;font-size:12px}
+.proxy-add,.compact-import{display:inline-block;vertical-align:top;box-sizing:border-box;width:calc(50% - 8px);padding:12px 16px}
+.proxy-add{margin-right:16px}.proxy-add[open],.compact-import[open]{width:100%;margin-right:0}
+@media(min-width:1250px){.library-workspace{grid-template-columns:minmax(0,1fr) 330px}}
+@media(max-width:1100px){.library-search{display:block}.library-search>.f{margin-top:10px}.library-search>input{margin-top:6px}.library-workspace{grid-template-columns:1fr}.proxy-inspector{border-left:0;border-top:1px solid #354147;padding:18px 0 0}}
+@media(max-width:700px){.w{padding:0 14px}.app-shell{display:block}.sidebar{border-right:0;padding:16px 0 0;display:block}.brand{font-size:20px}.brand span{display:none}.main-nav{flex-direction:row;overflow:auto;margin:14px 0 0;padding-bottom:8px;gap:4px}.main-nav a{white-space:nowrap;padding:7px 10px;border-left:0;border-bottom:2px solid transparent;gap:6px}.main-nav a.on{border-bottom-color:#80bbaa}.signout{position:absolute;right:14px;top:16px}.workspace{padding:22px 0}.page-head h1{font-size:24px}.c{padding:15px 12px}.list-meta{gap:10px}.list-meta span:last-child{display:none}.proxy-table td,.proxy-table th{padding:9px 5px}.page-head{margin-bottom:20px}}
 """
 
 
-def page(title, body, lang='ru'):
+def page(title, body, lang='en'):
     return ('<!doctype html><html lang="%s"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>%s</title><style>%s</style></head><body><div class="w">%s</div></body></html>'
-            % (setup_panel.language(lang), html.escape(title), CSS, body))
+            % (setup_panel.language(lang), html.escape(title), CSS,
+               '<form class="language-switch" method="post" action="/language" aria-label="Language">'
+               '<button class="g" name="lang" value="en">English</button>'
+               '<button class="g" name="lang" value="ru" translate="no">Русский</button></form>' + body))
 
 
 def login_page(msg=''):
@@ -1821,20 +1934,28 @@ def _age(sec):
     return '%d ч назад' % (sec // 3600)
 
 
-TAB_NAMES = {'status': 'Обзор', 'proxies': 'Прокси', 'devices': 'Устройства', 'mimic': 'Mimic', 'wifi': 'Wi-Fi', 'settings': 'Настройки'}
+TAB_NAMES = {'status': 'Обзор', 'proxies': 'Прокси', 'server': 'VPS', 'devices': 'Устройства', 'mimic': 'Mimic', 'wifi': 'Wi-Fi', 'settings': 'Настройки'}
 TAB_OF_PATH = {'/ipv6': 'settings', '/check': 'status', '/speed': 'status', '/proxy': 'proxies', '/proxy/check': 'proxies',
                '/proxy/off': 'proxies', '/lib': 'proxies', '/device': 'devices', '/wifi': 'wifi',
                '/tg': 'settings', '/restore': 'settings', '/traffic/reset': 'devices',
                '/lib/import': 'proxies', '/lib/meta': 'proxies', '/diagnostics': 'mimic', '/diagnostics/udp': 'mimic',
-               '/ios/location': 'mimic'}
+               '/ios/location': 'mimic', '/vps/setup': 'server', '/vps/use': 'server'}
 
 
-def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters=None, import_result=None, job=None, audit_result=None, udp_result=None, pairing_owner='', connection_report=None):
+def action_return(path, fields):
+    if path in ('/lib', '/lib/meta'):
+        return libpanel.view_url(fields)
+    section = {'/tg': 'notifications', '/restore': 'backup', '/wifi': 'access-point'}.get(path)
+    return '/?tab=' + TAB_OF_PATH.get(path, 'status') + ('&section=' + section if section else '')
+
+
+def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters=None, import_result=None, job=None, audit_result=None, udp_result=None, pairing_owner='', connection_report=None, section=''):
     if tab not in TAB_NAMES:
         tab = 'status'
     e = html.escape
     st = status_dict()
-    out = ['<h1>GeoBox</h1><p><a href="/setup">Мастер настройки / Setup wizard</a></p>']
+    out = ['<header class="page-head"><div><p class="eyebrow">GeoBox / Control panel</p><h1>%s</h1></div>'
+           '<a class="btn" href="/setup">Мастер настройки</a></header>' % e(TAB_NAMES[tab])]
     if job and job.get('status') == 'running':
         out.append('<div class="c" id="panel-job" data-job="%s"><b>%s</b>'
                    '<div class="hint" id="panel-job-message">Выполняется. Можно переходить между вкладками.</div>'
@@ -1862,6 +1983,8 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
     current = load_proxy()
     cur_item = next((it for it in lib['items'] if current and libmod.identity(it) == libmod.identity(current)), None)
     cards = {k: [] for k in TAB_NAMES}
+    if tab == 'server':
+        cards['server'].append(vpsmod.card(vpsmod.load(ETC), current))
     if tab == 'mimic':
         ios_snapshot = get_ios_manager().snapshot()
         ios_snapshot['pairing'] = get_ios_pairing_manager().snapshot(pairing_owner)
@@ -1876,7 +1999,7 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
         sb_ok = st['singbox'] == 'active'
         ex = st['exit']
         if ex:
-            exit_html = '<span class="ok">%s</span> · %s %s<br><span class="k">%s · %s</span>' % (
+            exit_html = '<span class="ok">%s</span> · %s %s<br><span class="k"><span translate="no">%s</span> · <span>%s</span></span>' % (
                 e(ex['ip']), e(ex['country']), e(ex['city']), e(ex['org']), e(_age(st['exit_age'])))
         elif st['proxy']:
             exit_html = ('<span class="err">не отвечает</span>' if state['exit_time'] else
@@ -1904,6 +2027,11 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
         elif age > 15:
             cards['status'].append('<div class="msg warn">Системный статус обновлён %d с назад; сбор данных задерживается.</div>' % age)
     if tab == 'proxies':
+        cards['proxies'].append('<div class="route-bar"><span><span>%s</span><br><small translate="no">%s</small></span>'
+             '<form method="post" action="/proxy/off"><button class="g">%s</button></form></div>' % (
+                 'Server exit is active.' if current and current.get('origin') == 'vps' else 'Default proxy',
+                 e(proxy_label(current) or '—'),
+                 'Use server now' if vpsmod.load(ETC) else 'Выключить прокси'))
         prefill = probe_res['text'] if probe_res else ''
         if probe_res:
             if probe_res['ok']:
@@ -1919,13 +2047,13 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
             else:
                 res = '<div class="c res"><h2>Проверка</h2><div class="err">%s</div></div>' % e(probe_res['msg'])
             cards['proxies'].append(res)
-        cards['proxies'].append('<div class="c"><h2>Прокси</h2><form method="post" action="/proxy">'
+        cards['proxies'].append('<details class="c proxy-add"%s><summary>Добавить прокси</summary><form method="post" action="/proxy">'
                    '<textarea name="proxy" rows="2" placeholder="вставь прокси в любом формате" autocomplete="off" '
                    'autocapitalize="off" spellcheck="false">%s</textarea>'
                    '<div class="f"><button class="g" formaction="/proxy/check">Проверить</button>'
                    '<button>Применить</button></div></form>'
-                   '<div class="hint">Понимаю почти любую запись: <code>ip:порт:логин:пароль</code>, <code>логин:пароль:ip:порт</code>, '
-                   '<code>логин:пароль@ip:порт</code>, <code>ip:порт</code>, с разделителями <code>|</code> <code>;</code> или пробелом, '
+                   '<div class="hint">Понимаю почти любую запись: <code>ip:port:user:password</code>, <code>user:password:ip:port</code>, '
+                   '<code>user:password@ip:port</code>, <code>ip:port</code>, с разделителями <code>|</code> <code>;</code> или пробелом, '
                    'со схемами <code>socks5://</code> <code>socks4://</code> <code>http://</code> <code>https://</code>, '
                    'а также ссылки <code>vless://</code> <code>vmess://</code> <code>trojan://</code> <code>ss://</code> '
                    '<code>hysteria2://</code>. Если тип не указан, SOCKS5/HTTP/SOCKS4/HTTPS определяется сам.<br>'
@@ -1935,7 +2063,7 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
                    'Новый адрес или изменение правил могут потребовать перезапуска и кратко прервать соединения устройств. '
                    'Проверка может занять до минуты.</div>'
                    '<div class="f"><form class="i" method="post" action="/proxy/off">'
-                   '<button class="g">Выключить прокси</button></form></div></div>' % e(prefill))
+                   '<button class="g">Выключить прокси</button></form></div></details>' % (' open' if prefill or not lib['items'] else '', e(prefill)))
     cl = st['clients']
     if tab == 'devices':
         online = {c['mac'] for c in cl}
@@ -2034,10 +2162,22 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
     nav = ''.join('<a href="/?tab=%s" class="%s">%s%s</a>' % (
         k, 'on' if k == tab else '', TAB_NAMES[k], (' <span class="n">%d</span>' % counts[k]) if counts.get(k) else '')
         for k in TAB_NAMES)
-    out.insert(1, '<nav class="tabs">%s</nav>' % nav)
-    out.extend(cards[tab])
-    out.append('<form method="post" action="/logout"><button class="g">Выйти</button></form>')
-    return page('GeoBox', ''.join(out))
+    sections = {'settings': [('network', 'Сеть'), ('notifications', 'Уведомления'), ('backup', 'Резервная копия')],
+                'wifi': [('adapters', 'Адаптеры'), ('access-point', 'Точка доступа')]}
+    if tab in sections:
+        entries = sections[tab]
+        index = next((i for i, (key, _) in enumerate(entries) if key == section), 0)
+        out.append('<nav class="subnav" aria-label="Подразделы">' + ''.join(
+            '<a href="/?tab=%s&amp;section=%s"%s>%s</a>' % (
+                tab, key, ' aria-current="page"' if i == index else '', label)
+            for i, (key, label) in enumerate(entries)) + '</nav>')
+        out.append(cards[tab][index])
+    else:
+        out.extend(cards[tab])
+    shell = ('<div class="app-shell"><aside class="sidebar"><a class="brand" href="/">GeoBox<span>NETWORK CONSOLE</span></a>'
+             '<nav class="main-nav" aria-label="Разделы">%s</nav><form class="signout" method="post" action="/logout">'
+             '<button class="g">Выйти</button></form></aside><main class="workspace">%s</main></div>') % (nav, ''.join(out))
+    return page('GeoBox', shell)
 
 
 # ---------------------------------------------------------------- веб-сервер
@@ -2047,6 +2187,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def _language(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        if query.get('lang', [''])[0] in ('en', 'ru'):
+            return query['lang'][0]
+        for part in self.headers.get('Cookie', '').split(';'):
+            key, _, value = part.strip().partition('=')
+            if key == 'gb_lang':
+                return i18n.language(value)
+        return 'en'
 
     def _session(self):
         for part in self.headers.get('Cookie', '').split(';'):
@@ -2059,6 +2209,11 @@ class Handler(BaseHTTPRequestHandler):
         return None, None
 
     def _send(self, code, body, ctype='text/html; charset=utf-8', headers=()):
+        if ctype.startswith('text/html'):
+            body = i18n.document(body, self._language())
+            headers = list(headers) + [('Set-Cookie', 'gb_lang=%s; Path=/; Max-Age=31536000; SameSite=Strict' % self._language())]
+        elif ctype.startswith('application/javascript'):
+            body = i18n.javascript(body, self._language())
         b = body.encode('utf-8')
         self.send_response(code)
         self.send_header('Content-Type', ctype)
@@ -2147,6 +2302,7 @@ class Handler(BaseHTTPRequestHandler):
             if not job or query.get('id', [''])[0] != job['id']:
                 return self._send(404, '{}', 'application/json')
             public = {k: job[k] for k in ('id', 'status', 'label')}
+            public['label'] = i18n.text(public['label'], self._language())
             public['seconds'] = max(0, int(time.time() - job['started']))
             return self._send(200, json.dumps(public, ensure_ascii=False), 'application/json; charset=utf-8')
         if path == '/mimic.js':
@@ -2170,7 +2326,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect('/')
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             with sess_lock:
-                lang = setup_panel.language(query.get('lang', [s.get('setup_lang', 'ru')])[0])
+                lang = self._language()
                 s['setup_lang'] = lang
                 try:
                     step = max(1, min(4, int(query.get('step', [s.get('setup_step', 1)])[0])))
@@ -2194,11 +2350,11 @@ class Handler(BaseHTTPRequestHandler):
             probe_res = s.pop('probe', None) if tab == 'proxies' else None
             import_result = s.pop('library_import', None) if tab == 'proxies' else None
             job = dict(s.get('job') or {})
-        filters = {k: query.get(k, [''])[0] for k in ('q', 'tag', 'favorite')}
+        filters = {k: query.get(k, [''])[0] for k in ('q', 'tag', 'favorite', 'p', 'selected')}
         audit_result = session_audit(s) if tab == 'mimic' else None
         udp_result = session_udp_probe(s, self.client_address[0]) if tab == 'mimic' else None
         connection_report = session_connection_diagnosis(s, self.client_address[0]) if tab == 'status' else None
-        return self._send(200, main_page(flash, probe_res, tab, self.client_address[0], filters, import_result, job, audit_result, udp_result, tok, connection_report))
+        return self._send(200, main_page(flash, probe_res, tab, self.client_address[0], filters, import_result, job, audit_result, udp_result, tok, connection_report, query.get('section', [''])[0]))
 
     def do_POST(self):
         self._request_started = time.monotonic()
@@ -2215,15 +2371,32 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 queue_action(s, 'Восстановление настроек',
                              lambda: action_restore(fields.get('file', b''), fields.get('wifi') == b'1'))
-                return self._redirect('/?tab=settings')
+                return self._redirect('/?tab=settings&section=backup')
             with sess_lock:
                 s['flash'] = msg
-            return self._redirect('/?tab=settings')
+            return self._redirect('/?tab=settings&section=backup')
         f = self._form(512 * 1024 if path == '/lib/import' else 16384)
         if f is None:
             return self._send(413, page('GeoBox', '<p>Слишком большой запрос.</p>'))
         if path == '/login':
             return self._login(f)
+        if path == '/language':
+            lang = i18n.language(f.get('lang'))
+            # Only a local known page is restored; never accept a redirect URL.
+            previous = urllib.parse.urlsplit(self.headers.get('Referer', ''))
+            query = urllib.parse.parse_qs(previous.query)
+            tab = query.get('tab', ['status'])[0]
+            tab = tab if tab in TAB_NAMES else 'status'
+            target = '/setup' if previous.path == '/setup' else '/?tab=' + tab
+            if previous.path == '/setup' and query.get('step', [''])[0] in ('1', '2', '3', '4'):
+                target += '?step=' + query['step'][0]
+            elif tab == 'proxies':
+                target = libpanel.view_url({key: val[0] for key, val in query.items()})
+            elif tab in ('settings', 'wifi'):
+                section = query.get('section', [''])[0]
+                if section in ('network', 'notifications', 'backup', 'adapters', 'access-point'):
+                    target += '&section=' + section
+            return self._redirect(target, [('Set-Cookie', 'gb_lang=%s; Path=/; Max-Age=31536000; SameSite=Strict' % lang)])
         tok, s = self._session()
         if not s:
             return self._redirect('/')
@@ -2300,6 +2473,8 @@ class Handler(BaseHTTPRequestHandler):
                 s['library_import'] = result
             return self._redirect('/?tab=proxies')
         slow = {
+            '/vps/setup': ('Server setup', lambda: action_vps_setup(f)),
+            '/vps/use': ('Switching to server', action_vps_use),
             '/wifi': ('Обновление Wi-Fi', lambda: action_wifi(f.get('ssid', ''), f.get('pw', ''), f.get('pw2', ''), f.get('band', ''))),
             '/ipv6': ('Проверка и применение IPv6', lambda: action_ipv6(f.get('mode', ''))),
             '/diagnostics': ('Проверка защиты на малине', lambda: action_diagnostics(s)),
@@ -2316,7 +2491,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in slow:
             label, action = slow[path]
             queue_action(s, label, action)
-            return self._redirect('/?tab=' + TAB_OF_PATH.get(path, 'status'))
+            return self._redirect(action_return(path, f))
         if path == '/lib':
             msg = action_lib(f.get('op', ''), f.get('id', ''))
         elif path == '/lib/meta':
@@ -2340,7 +2515,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, page('GeoBox', '<p>Нет такой страницы.</p>'))
         with sess_lock:
             s['flash'] = msg
-        return self._redirect('/?tab=' + TAB_OF_PATH.get(path, 'status'))
+        return self._redirect(action_return(path, f))
 
     def _login(self, f):
         now = time.time()

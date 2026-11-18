@@ -2,10 +2,11 @@
 import html
 
 import proxy_checks
+import i18n
 
 
 def language(value):
-    return 'en' if value == 'en' else 'ru'
+    return 'ru' if value == 'ru' else 'en'
 
 
 def render(lang, step, wifi, current, item=None, flash=None, job=None, exit_ok=False):
@@ -37,12 +38,7 @@ def render(lang, step, wifi, current, item=None, flash=None, job=None, exit_ok=F
                     tr('Дождись завершения операции.', 'Wait for the operation to finish.')))
     if flash:
         level, message = flash
-        # Existing backend messages are Russian. Keep them only on Russian UI;
-        # English users get an honest outcome and actionable general guidance.
-        if en:
-            message = ('Operation completed. Check the current state below.' if level == 'ok' else
-                       'Could not confirm success. Check your inputs and connection. '
-                       'Detailed diagnostics are available in the main panel (Russian).')
+        message = i18n.text(message, lang)
         out.append('<div class="msg %s" role="status">%s</div>' %
                    ('ok' if level == 'ok' else 'warn', esc(message)))
     out.append('<div class="c"><h2>%d. %s</h2>' % (step, names[step-1]))
@@ -97,5 +93,5 @@ def render(lang, step, wifi, current, item=None, flash=None, job=None, exit_ok=F
             'Геолокация iPhone настраивается отдельно: нужен режим разработчика и сопряжение.',
             'Open a website on your phone, then use Mimic in the panel to test the browser itself. '
             'iPhone location is optional and requires Developer Mode and pairing.'))
-    out.append('</div><p><a href="/">%s</a></p>' % tr('Открыть основную панель', 'Open main panel (currently Russian)'))
+    out.append('</div><p><a href="/">%s</a></p>' % tr('Открыть основную панель', 'Open main panel'))
     return ''.join(out)

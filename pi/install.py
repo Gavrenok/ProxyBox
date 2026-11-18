@@ -66,7 +66,7 @@ def verify_release(root):
     if not required <= files.keys():
         raise ValueError('Release is incomplete')
     for name, expected in files.items():
-        if name not in GUIDE_ASSETS and not re.fullmatch(r'(?:app/[a-z0-9_-]+\.(?:py|js|sh|nft)|system/[a-z0-9.-]+|install\.py|README(?:\.ru)?\.md)', name):
+        if name not in GUIDE_ASSETS | {'app/translations.json'} and not re.fullmatch(r'(?:app/[a-z0-9_-]+\.(?:py|js|sh|nft)|system/[a-z0-9.-]+|install\.py|README(?:\.ru)?\.md)', name):
             raise ValueError('Unexpected release path')
         if name.startswith('system/') and name.split('/')[1] not in SYSTEM:
             raise ValueError('Unexpected system file')

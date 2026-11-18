@@ -13,6 +13,25 @@ SPEC.loader.exec_module(builder)
 
 
 class ReleaseBundleTests(unittest.TestCase):
+    def test_actual_bundle_is_accepted_by_installer_including_translations(self):
+        spec = importlib.util.spec_from_file_location('bundle_installer', builder.ROOT / 'pi/install.py')
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        with tempfile.TemporaryDirectory() as directory:
+            stage = Path(directory)
+            for name, raw in builder.source_payload(builder.ROOT).items():
+                path = stage / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(raw)
+            verified = installer.verify_release(stage)
+            self.assertIn('app/translations.json', verified['files'])
+            manifest = json.loads((stage / 'manifest.json').read_text())
+            (stage / 'app/proxy.json').write_bytes(b'{}')
+            manifest['files']['app/proxy.json'] = hashlib.sha256(b'{}').hexdigest()
+            (stage / 'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, 'Unexpected release path'):
+                installer.verify_release(stage)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

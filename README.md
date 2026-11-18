@@ -72,7 +72,7 @@ fails, stop and check the troubleshooting table before continuing.
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y git python3 python3-venv network-manager dnsmasq nftables iproute2 iw curl ca-certificates avahi-daemon avahi-utils rfkill
+sudo apt-get install -y git python3 python3-venv python3-paramiko network-manager dnsmasq nftables iproute2 iw curl ca-certificates avahi-daemon avahi-utils rfkill
 sudo systemctl stop dnsmasq
 sudo systemctl enable --now NetworkManager avahi-daemon
 sudo nmcli radio wifi on
@@ -158,15 +158,19 @@ blocked until you add a working proxy in the next step.
 2. Open **[http://10.77.0.1/](http://10.77.0.1/)** in Safari or another browser.
    Type it into the address bar, not a search box. It uses **http**, not https.
 3. Sign in with the **panel password** from step 5.
-4. Open **Мастер настройки / Setup wizard**, then choose **English**.
+4. Open **Setup wizard**. New browser sessions start in **English**; the language
+   switch at the top of the panel also offers **Русский** and remembers your choice.
 5. Keep the current Wi-Fi settings. Paste your provider's proxy on step 2 and
    press **Check and apply**. Wait for the result.
 6. Step 3 offers an optional capability check; step 4 explains how to check
    the connection from your phone. The wizard is also at **http://10.77.0.1/setup**
    after login. It configures the installed panel; it does not replace steps 1–5.
 
-You can still manage proxies directly in **Прокси** (Proxies) and verify the
-active exit in **Обзор → Проверить выход** (Overview → Check exit).
+You can also manage proxies directly in **Proxies** and verify the
+active exit in **Overview → Check exit**. The library shows 15 entries per page;
+search and tag/favorite filters cover the entire library. Select a row to open
+its actions and metadata. Settings have separate Network, Notifications and
+Backup sections; Wi-Fi separates adapters from access-point settings.
 
 Example input format — **not a working proxy**:
 
@@ -183,6 +187,51 @@ your proxy's address. For a client-side comparison, open [BrowserLeaks IP](https
 Test on the device connected to **My ProxyBox**, not your PC on the home Wi-Fi.
 The panel is also available on your trusted home LAN; do not forward its port 80
 from your router to the internet.
+
+### Use your own VPS as the default exit
+
+Open **VPS** and enter the server's public IPv4 address, SSH port, user and
+password. Ubuntu/Debian with Python 3 and root (or passwordless sudo) is required.
+Leave the service port blank to choose an available port. Click **Set up server**.
+The panel installs its SSH dependency on the Pi if needed, then provisions an
+independent encrypted Shadowsocks service on the VPS and verifies the exit.
+An existing proxy stays selected; if none is selected, the verified server is
+activated. The SSH password is used for this operation and is not saved.
+
+**Turn off proxy / Use server now** selects your configured VPS. Applying a
+library proxy selects that proxy again. A failed proxy does **not** silently
+switch to the VPS. Per-device proxy/block assignments remain in effect.
+Without a configured VPS, turning off the default proxy keeps the existing
+blocked-default behavior.
+
+Setup creates its own `geobox-egress-<instance>.service` and configuration under
+`/etc/geobox-egress/`; it does not rewrite SSH, default routes or existing
+services. Package upgrades/removals found in the install plan stop setup.
+An active UFW receives one rule for the chosen TCP port. A provider-side cloud
+firewall may still need that port opened. If the exit check fails, a newly
+created GeoBox service is removed and the previous selection stays active.
+If cleanup cannot finish, the panel reports it; retrying reuses the same instance.
+The distribution package may remain installed after rollback.
+
+The first observed SSH host key is trusted and pinned; later changes stop setup.
+Use the password form only through your trusted management network. Settings
+backups include the tunnel credential, never the SSH password. Restore does not
+replace this Pi's existing SSH trust pins. Protect backups like proxy passwords.
+
+This uses the existing **TCP and DNS** data path. General client UDP remains
+blocked; IPv6 keeps its existing policy. It is not a full WireGuard VPN.
+The VPS changes the exit IP, not your ISP bandwidth: a 100 Mbps internet link
+still limits a faster Wi-Fi adapter. Setup and activation were also verified on
+a live server: the connected Windows client's external IP matched the VPS.
+Compatibility still depends on the server's OS, package manager and firewall.
+
+**A server IP does not replace device coordinates.** Websites granted location
+permission can obtain the Windows/iPhone position independently of the exit IP.
+Our Windows location result used a temporary local sensor, removed after the
+test; there is no persistent Windows component in this release. See
+[Windows location](docs/windows-location.md). Paired iPhones use the separate
+location synchronization feature below. Deny a site's location permission if
+you do not want to share device coordinates.
 
 ### Capability checks and backup proxies
 

@@ -49,11 +49,12 @@ class PanelTests(unittest.TestCase):
         self.thread.join()
         self.notify.assert_not_called()
 
-    def request(self, path, fields=None, authenticated=True, origin=None):
+    def request(self, path, fields=None, authenticated=True, origin=None, extra_headers=None):
         conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
         headers = {'Cookie': 'gbs=local-test'} if authenticated else {}
         if origin:
             headers['Origin'] = origin
+        headers.update(extra_headers or {})
         body = urllib.parse.urlencode(fields) if fields is not None else None
         if body is not None:
             headers['Content-Type'] = 'application/x-www-form-urlencoded'
@@ -62,6 +63,46 @@ class PanelTests(unittest.TestCase):
         result = res.status, dict(res.getheaders()), res.read().decode('utf-8')
         conn.close()
         return result
+
+    def test_locale_defaults_to_english_and_switch_preserves_library_context(self):
+        _, headers, body = self.request('/', authenticated=False)
+        self.assertIn('<html lang="en">', body)
+        self.assertIn('Panel password', body)
+        status, headers, _ = self.request('/language', {'lang':'ru'}, extra_headers={
+            'Referer': 'http://127.0.0.1/?tab=proxies&p=3&selected=abc&q=DE&next=https://evil.test'})
+        self.assertEqual(status, 303)
+        self.assertIn('gb_lang=ru', headers['Set-Cookie'])
+        self.assertIn('p=3', headers['Location'])
+        self.assertIn('selected=abc', headers['Location'])
+        self.assertNotIn('evil.test', headers['Location'])
+        _, _, body = self.request('/', authenticated=False, extra_headers={'Cookie':'gb_lang=ru'})
+        self.assertIn('<html lang="ru">', body)
+        self.assertEqual(self.request('/language', {'lang':'en'}, origin='https://evil.test')[0], 403)
+
+    def test_vps_setup_requires_login_and_same_origin_and_does_not_echo_secret(self):
+        fields = {'host':'8.8.8.8', 'ssh_password':'SSH-SECRET'}
+        entered = threading.Event()
+        def setup(data):
+            data['ssh_password'] = ''
+            entered.set()
+            return ('ok', 'Server configured')
+        action = self.patch(g, 'action_vps_setup', side_effect=setup)
+        self.assertEqual(self.request('/vps/setup', fields, authenticated=False)[0], 303)
+        self.assertEqual(self.request('/vps/setup', fields, origin='https://evil.test')[0], 403)
+        action.assert_not_called()
+        status, headers, _ = self.request('/vps/setup', fields)
+        self.assertEqual((status, headers['Location']), (303, '/?tab=server'))
+        self.assertTrue(entered.wait(1))
+        job = g.sessions['local-test']['job']
+        _, _, body = self.request('/api/job?id=' + job['id'])
+        self.assertNotIn('SSH-SECRET', body)
+        _, _, body = self.request('/?tab=server')
+        self.assertNotIn('SSH-SECRET', body)
+
+    def test_settings_actions_return_to_their_section(self):
+        self.patch(g, 'action_tg', return_value=('ok','Saved'))
+        _, headers, _ = self.request('/tg', {'op':'save'})
+        self.assertEqual(headers['Location'], '/?tab=settings&section=notifications')
 
     def test_all_tabs_render_and_mimic_script_requires_login(self):
         for tab in g.TAB_NAMES:
@@ -318,6 +359,35 @@ class PanelTests(unittest.TestCase):
             self.assertEqual((root / name).read_bytes(), raw, name)
         restart.assert_called_once()
         self.assertFalse((root / 'switch-pending.json').exists())
+
+    def test_restore_server_is_transactional_and_backup_excludes_ssh_password(self):
+        root, _, backup, _ = self.restore_fixture()
+        server = {'host':'8.8.8.8','ssh_port':22,'user':'root','owner':'a'*24,'fingerprint':'SHA256:'+'a'*43,
+                  'ssh_password':'NEVER-EXPORT', 'proxy':{'origin':'vps','outbound':{'type':'shadowsocks',
+                    'server':'8.8.8.8','server_port':32180,'method':'chacha20-ietf-poly1305','password':'b'*43}}}
+        (root / 'vps.json').write_text(json.dumps(server))
+        exported = g.export_backup()
+        self.assertNotIn('NEVER-EXPORT', exported)
+        self.assertEqual(json.loads(exported)['vps']['proxy']['outbound']['password'], 'b'*43)
+        original = (root / 'vps.json').read_bytes()
+        restore = json.loads(backup)
+        restore['vps'] = {}
+        self.patch(g, 'apply', return_value=(False,'failed'))
+        self.patch(g, 'verify_switch_exit', return_value={'ip':'203.0.113.1'})
+        self.assertEqual(g.action_restore(json.dumps(restore).encode(), False)[0], 'err')
+        self.assertEqual((root / 'vps.json').read_bytes(), original)
+
+    def test_backup_cannot_replace_pinned_server_identity(self):
+        root, _, backup, _ = self.restore_fixture()
+        restore = json.loads(backup)
+        restore['vps'] = {'host':'8.8.8.8','ssh_port':22,'user':'root','owner':'a'*24,
+                         'fingerprint':'SHA256:'+'a'*43, 'proxy':{'origin':'vps','outbound':{
+                         'type':'shadowsocks','server':'8.8.8.8','server_port':32180,
+                         'method':'chacha20-ietf-poly1305','password':'b'*43}}}
+        (root / 'vps-hosts.json').write_text(json.dumps({'8.8.8.8:22':'SHA256:DIFFERENT'}))
+        apply = self.patch(g, 'apply')
+        self.assertEqual(g.action_restore(json.dumps(restore).encode(), False)[0], 'err')
+        apply.assert_not_called()
 
     def test_restore_failed_exit_restores_all_files(self):
         root, files, backup, restart = self.restore_fixture()

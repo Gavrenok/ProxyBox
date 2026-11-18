@@ -64,6 +64,23 @@ reported accuracy does not make that estimate accurate to a meter.
 
 ## Product boundary
 
+### Why a VPS can show a different city from BrowserLeaks Geolocation
+
+The VPS changes the public IP used for routed connections. A website with
+location permission can separately request the position supplied by Windows.
+[Windows Location Services](https://support.microsoft.com/en-us/windows/privacy/windows-location-service-and-privacy)
+uses several inputs, including nearby Wi-Fi networks and GPS where available.
+A VPS connection does not enable or install the temporary sensor used above.
+
+To withhold coordinates, revoke the website's location permission. For Windows
+apps, use **Settings → Privacy & security → Location** to control location
+access. Blocking permission produces an unavailable/denied result; it does not
+make Windows return the VPS city. These controls also do not override apps
+using independent location methods. Continuous substitution needs a local
+component and verification after exit changes.
+
+### Current implementation limits
+
 - The result confirms the Windows location API and the tested browser on this
   machine. Other browsers and applications, their permissions, caches and
   independent location providers still need separate verification. It is not a universal override of
