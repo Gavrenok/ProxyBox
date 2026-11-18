@@ -42,3 +42,11 @@ remote_*.plist
 *.ipsw
 *.aea
 *.cryptex
+
+# Private Wi-Fi experiment inputs and device diagnostics
+wifi-radio.json
+wifi-request.json
+wifi-job.json
+*sysdiagnose*
+*.pcap
+*.pcapng

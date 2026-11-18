@@ -5,6 +5,7 @@
 Счётчики фаервола обнуляются при перезагрузке - это учитывается: если число стало меньше, считаем с нуля.
 """
 import json
+import lan
 import ipaddress
 import os
 import re
@@ -80,7 +81,7 @@ def ipv6_neighbors(run):
     SLAAC privacy addresses are grouped using the current neighbor table. Missing
     or unverifiable neighbors retain their ip: bucket rather than guessing a MAC.
     """
-    rc, out, _ = run(['ip', '-j', '-6', 'neigh', 'show', 'dev', 'wlan0'], timeout=10)
+    rc, out, _ = run(['ip', '-j', '-6', 'neigh', 'show', 'dev', lan.ap_interface()], timeout=10)
     if rc != 0:
         return {}
     try:
@@ -91,7 +92,7 @@ def ipv6_neighbors(run):
         return {}
     result = {}
     for row in rows:
-        if not isinstance(row, dict) or row.get('dev', 'wlan0') != 'wlan0':
+        if not isinstance(row, dict) or row.get('dev', lan.ap_interface()) != lan.ap_interface():
             continue
         mac = row.get('lladdr')
         if not isinstance(mac, str):

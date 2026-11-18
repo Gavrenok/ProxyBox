@@ -12,6 +12,7 @@ sing-box/nftables interpreter. Unsupported policy constructs produce unknown.
 """
 import ipaddress
 import json
+import lan
 import subprocess
 import time
 
@@ -449,7 +450,7 @@ def _forward_rule(rule):
         else:
             unknown = True
     pair = (interfaces.get('iifname'), interfaces.get('oifname'))
-    if accept and pair not in (('wlan0', 'sbtun'), ('sbtun', 'wlan0')):
+    if accept and pair not in ((lan.ap_interface(), 'sbtun'), ('sbtun', lan.ap_interface())):
         return 'warn', None
     if unknown or not accept:
         return 'unknown', None
@@ -477,7 +478,7 @@ def _firewall(nft, ipv6=False):
     checks = [_forward_rule(rule) for rule in relevant]
     status = _worst(value[0] for value in checks)
     pairs = {pair for _, pair in checks if pair}
-    if pairs != {('wlan0', 'sbtun'), ('sbtun', 'wlan0')} and status == 'pass':
+    if pairs != {(lan.ap_interface(), 'sbtun'), ('sbtun', lan.ap_interface())} and status == 'pass':
         status = 'warn'
     if ipv6:
         ipv6_pairs = set()
@@ -488,7 +489,7 @@ def _firewall(nft, ipv6=False):
                             for expr in rule.get('expr', []) if isinstance(expr, dict))
             if rule_status == 'pass' and not ipv4_only:
                 ipv6_pairs.add(pair)
-        if ipv6_pairs != {('wlan0', 'sbtun'), ('sbtun', 'wlan0')}:
+        if ipv6_pairs != {(lan.ap_interface(), 'sbtun'), ('sbtun', lan.ap_interface())}:
             status = _worst([status, 'warn'])
     extra = [other for other in chains if other.get('hook') in ('forward', 'ingress', 'prerouting') and other is not chain]
     if extra or any('flowtable' in entry for entry in entries):
@@ -504,7 +505,7 @@ def _policy_route(rules, ipv6=False):
     key = 'routing_policy6' if ipv6 else 'routing_policy'
     if rules is None or not all(isinstance(rule, dict) for rule in rules):
         return _check(key, 'unknown', 'Не удалось прочитать правила маршрутизации выбранного семейства IP.')
-    candidates = [rule for rule in rules if rule.get('iif') == 'wlan0' and str(rule.get('table')) == '100']
+    candidates = [rule for rule in rules if rule.get('iif') == lan.ap_interface() and str(rule.get('table')) == '100']
     if not candidates:
         return _check(key, 'warn', 'Нет правила направления входящего Wi-Fi трафика в таблицу 100.')
     safe = []
@@ -525,7 +526,7 @@ def _policy_route(rules, ipv6=False):
         if (priority == 0 and rule.get('table') == 'local' and rule.get('src', 'all') == 'all'
                 and set(rule) <= {'priority', 'src', 'table', 'protocol'}):
             continue
-        if isinstance(rule.get('iif'), str) and rule['iif'] != 'wlan0' and 'not' not in rule:
+        if isinstance(rule.get('iif'), str) and rule['iif'] != lan.ap_interface() and 'not' not in rule:
             continue
         # ip-rule(8): oif matches only traffic from local sockets bound to a
         # device, never a forwarded packet arriving on wlan0. sing-box creates

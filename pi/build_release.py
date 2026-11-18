@@ -18,6 +18,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_FILES = (
+    'lan.py', 'wifi_radio.py',
     'failover_policy.py', 'proxy_checks.py', 'setup_panel.py',
     'connectivity.py',
     'devices.py', 'fastswitch.py', 'geobox.nft', 'geobox.py',
@@ -40,6 +41,7 @@ FILES = {
     'install.py': 'pi/install.py',
     'README.md': 'README.md',
     'README.ru.md': 'README.ru.md',
+    'docs/radio-experiments.md': 'docs/radio-experiments.md',
     **{'docs/images/' + name: 'docs/images/' + name for name in GUIDE_IMAGES},
 }
 

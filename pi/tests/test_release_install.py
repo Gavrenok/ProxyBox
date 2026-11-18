@@ -191,6 +191,32 @@ class ReleaseInstallTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'edited locally'):
                     installer.update_plan(old, old)
 
+    def test_network_migration_is_scoped_and_keeps_service_changes_blocked(self):
+        old = self.installed()
+        new = json.loads(json.dumps(old))
+        new['files']['system/geobox.conf'] = 'b' * 64
+        plan = installer.update_plan(new, old, network=True)
+        self.assertIn('system/geobox.conf', plan)
+        self.assertIn('app/lan.py', plan)
+        new['files']['system/geobox-panel.service'] = 'c' * 64
+        with self.assertRaisesRegex(RuntimeError, 'dedicated migration'):
+            installer.update_plan(new, old, network=True)
+
+    def test_network_migration_failure_restores_files_and_reapplies_old_policy(self):
+        old, new = self.changed_release()
+        before = (self.system / 'geobox.conf').read_bytes()
+        data = b'updated DHCP include\n'
+        (self.stage / 'system/geobox.conf').write_bytes(data)
+        new['files']['system/geobox.conf'] = sha(data)
+        self.health.side_effect = [RuntimeError('health failed'), None]
+        with patch.object(installer, 'mutation_guard', side_effect=nullcontext):
+            with self.assertRaisesRegex(RuntimeError, 'health failed'):
+                installer.apply_release(self.stage, new, network=True)
+        self.assertEqual((self.system / 'geobox.conf').read_bytes(), before)
+        commands = [call.args[0] for call in self.run.call_args_list]
+        self.assertEqual(commands.count(['/opt/geobox/net-up.sh']), 2)
+        self.assertTrue(any(self.backups.glob('release-*/ROLLED_BACK')))
+
     def test_update_refuses_removing_module(self):
         old = self.installed()
         new = json.loads(json.dumps(old))

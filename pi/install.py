@@ -32,8 +32,8 @@ RECEIPT = STATE / 'release.json'
 SB_VERSION = '1.14.4'
 IOS_VERSION = '11.49.0'
 GUIDE_ASSETS = {'docs/images/' + name for name in
-                ('setup-en.png', 'setup-ru.png', 'iphone-en.png', 'iphone-ru.png')}
-NETWORK = {'geobox.nft', 'net-up.sh', 'tun-route.sh', 'ipv6-network-setup.sh'}
+                ('setup-en.png', 'setup-ru.png', 'iphone-en.png', 'iphone-ru.png')} | {'docs/radio-experiments.md'}
+NETWORK = {'lan.py', 'wifi_radio.py', 'geobox.nft', 'net-up.sh', 'tun-route.sh', 'ipv6-network-setup.sh'}
 SYSTEM = {'geobox-net.service', 'geobox-singbox.service', 'geobox-panel.service',
           'geobox.conf', 'geobox-ipv6.conf'}
 UNITS = ['geobox-panel.service', 'geobox-singbox.service', 'geobox-net.service']
@@ -206,7 +206,7 @@ def atomic_write(path, data, mode=0o600):
     os.replace(temporary, path)
 
 
-def update_plan(manifest, previous):
+def update_plan(manifest, previous, network=False):
     old = previous.get('files', {})
     new = manifest['files']
     old_app = {n for n in old if n.startswith('app/')}
@@ -218,16 +218,22 @@ def update_plan(manifest, previous):
             raise RuntimeError('New module would overwrite an untracked file: ' + name)
     for name in new:
         if name.startswith('system/') or name.removeprefix('app/') in NETWORK:
-            if old.get(name) != new[name]:
+            if old.get(name) != new[name] and not (network and (name.removeprefix('app/') in NETWORK or name in {'system/geobox.conf', 'system/geobox-ipv6.conf'})):
                 raise RuntimeError('Network/system changes require a dedicated migration: ' + name)
     for name in old_app | {n for n in old if n.startswith('system/')}:
         target = destination(name)
         if target.is_symlink() or not target.is_file() or digest(target) != old[name]:
             raise RuntimeError('Installed code/config was edited locally: ' + name)
-    return sorted(new_app - {'app/' + n for n in NETWORK})
+    return sorted((new_app | {'system/geobox.conf', 'system/geobox-ipv6.conf'}) if network else new_app - {'app/' + n for n in NETWORK})
 
 
 def assert_no_pairing():
+    try:
+        radio = json.loads(Path('/run/geobox/wifi-job.json').read_text())
+    except FileNotFoundError:
+        radio = {}
+    if radio.get('busy'):
+        raise RuntimeError('Stop the Wi-Fi operation before updating')
     if Path('/run/geobox-ios-pairing-worker.json').exists():
         raise RuntimeError('Finish or cancel iPhone pairing before updating')
     names = {'ios_pairing_worker.py', 'iphone_pair_host.py', 'iphone_pairing_window.py'}
@@ -352,6 +358,11 @@ def restore(backup, automatic=False):
     if (backup / 'ROLLED_BACK').exists() or (automatic and (backup / 'COMMITTED').exists()):
         return
     meta = json.loads((backup / 'state.json').read_text())
+    if meta.get('network') and (backup / 'COMMITTED').exists():
+        choice = ETC / 'wifi-radio.json'
+        old_lan = meta['files'].get(str(APP / 'lan.py'), {})
+        if not old_lan.get('before') and choice.exists() and json.loads(choice.read_text()).get('interface') != 'wlan0':
+            raise RuntimeError('Select the built-in wlan0 AP before restoring a pre-adapter release')
     if meta['fresh'] and (backup / 'COMMITTED').exists():
         raise RuntimeError('A completed clean installation cannot be uninstalled with rollback')
     for name, entry in meta['files'].items():
@@ -405,13 +416,16 @@ def restore(backup, automatic=False):
             except OSError:
                 pass
     else:
+        if meta.get('network'):
+            run(['/opt/geobox/net-up.sh'])
+            run(['systemctl', 'restart', 'dnsmasq'])
         run(['systemctl', 'restart', 'geobox-panel'])
         health()
     (backup / 'ROLLED_BACK').write_text('ok\n')
     run(['systemctl', 'stop', 'geobox-release-recover-' + backup.name + '.timer'], check=False)
 
 
-def apply_release(stage, manifest, *, fresh=False, ssid=None, band='bg'):
+def apply_release(stage, manifest, *, fresh=False, ssid=None, band='bg', network=False):
     if fresh:
         clean_preflight()
         if not ssid or not 1 <= len(ssid.encode('utf-8')) <= 32 or any(ord(c) < 32 for c in ssid):
@@ -428,7 +442,7 @@ def apply_release(stage, manifest, *, fresh=False, ssid=None, band='bg'):
     else:
         if not RECEIPT.is_file():
             raise RuntimeError('No release receipt: legacy installations need a reviewed migration')
-        names = update_plan(manifest, json.loads(RECEIPT.read_text()))
+        names = update_plan(manifest, json.loads(RECEIPT.read_text()), network=network)
     payload = {destination(n): (stage / n).read_bytes() for n in names}
     payload[RECEIPT] = json.dumps(manifest, sort_keys=True).encode()
     profile = str(uuid.uuid4()) if fresh else None
@@ -445,6 +459,10 @@ def apply_release(stage, manifest, *, fresh=False, ssid=None, band='bg'):
         payload[Path('/var/lib/misc/geobox-dhcp-hosts')] = b''
         payload[Path('/etc/NetworkManager/system-connections/geobox-ap.nmconnection')] = profile_bytes(profile, ssid, wifi, band)
     backup = make_backup(stage, payload, fresh, profile)
+    if network:
+        meta = json.loads((backup / 'state.json').read_text())
+        meta['network'] = True
+        atomic_write(backup / 'state.json', json.dumps(meta).encode())
     print(json.dumps({'backup': str(backup), 'mode': 'install' if fresh else 'update'}), flush=True)
     entered = False
     try:
@@ -453,7 +471,7 @@ def apply_release(stage, manifest, *, fresh=False, ssid=None, band='bg'):
             if not fresh:
                 run(['systemctl', 'stop', 'geobox-panel'])
                 # Recheck after requests/background tasks have stopped.
-                update_plan(manifest, json.loads(RECEIPT.read_text()))
+                update_plan(manifest, json.loads(RECEIPT.read_text()), network=network)
                 validate_code(stage, current=True)
             else:
                 APP.mkdir(mode=0o755)
@@ -473,6 +491,10 @@ def apply_release(stage, manifest, *, fresh=False, ssid=None, band='bg'):
                 run(['nmcli', '--wait', '40', 'connection', 'up', 'uuid', profile], timeout=45)
                 run(['sysctl', '-q', '-w', 'net.ipv6.conf.wlan0.accept_ra=0', 'net.ipv6.conf.wlan0.autoconf=0'])
                 run(['systemctl', 'restart', 'dnsmasq', 'geobox-singbox'])
+            if network and not fresh:
+                run(['/opt/geobox/net-up.sh'])
+                run(['dnsmasq', '--test'])
+                run(['systemctl', 'restart', 'dnsmasq'])
             run(['systemctl', 'restart', 'geobox-panel'])
             health()
             if fresh:
@@ -505,6 +527,7 @@ def main():
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--install', action='store_true')
     mode.add_argument('--update', action='store_true')
+    mode.add_argument('--update-network', action='store_true', help='Reviewed Wi-Fi interface/DHCP migration with rollback')
     mode.add_argument('--rollback', type=Path)
     mode.add_argument('--recover', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--ssid')
@@ -531,8 +554,8 @@ def main():
             stage = Path(directory)
             manifest = copy_verified(Path(__file__).resolve().parent, stage)
             preflight(stage)
-            if args.install or args.update:
-                apply_release(stage, manifest, fresh=args.install, ssid=args.ssid, band=args.band)
+            if args.install or args.update or args.update_network:
+                apply_release(stage, manifest, fresh=args.install, ssid=args.ssid, band=args.band, network=args.update_network)
             else:
                 print(json.dumps({'preflight': 'passed', 'configuration_valid': True,
                                   'existing_installation': ETC.exists(), 'changes': False}))

@@ -282,7 +282,7 @@ Native apps may detect software simulation. Long sleep/reboot behavior is not fu
 
 When asking for help, share the failed step and error text. Hide proxy passwords,
 Telegram tokens/chat IDs, pairing PINs and device identifiers. Do not upload `/etc/geobox`
-or `/var/lib/geobox/ios`. Experimental radio/firmware tools are not part of this release.
+or `/var/lib/geobox/ios`. Bounded Wi-Fi beacon experiments are included as an opt-in feature; commercial firmware and private research captures are not distributed.
 
 ## Update and roll back
 
@@ -396,3 +396,21 @@ automatically upgraded to newer versions.
 
 
 </details>
+
+## Wi-Fi adapter selection and experimental beacons
+
+The **Wi-Fi** tab now shows which radio serves the internet and lets you try a
+built-in or USB access point. Unsupported bands are refused. Reconnect and confirm
+within 120 seconds or the change rolls back. USB does not automatically mean
+faster Wi-Fi or greater range.
+
+A separate idle USB radio can transmit a user-supplied beacon dataset for
+10–300 seconds, with Stop and automatic cleanup. It is off by default.
+**System location spoofing has not been demonstrated on the tested unpaired
+iPhone; Android, Windows and macOS remain unvalidated.** The iPhone received the
+beacons and calculated target Wi-Fi positions, but its location fusion rejected
+them. Absence of surrounding networks is not a proven fix.
+
+[Adapter instructions, evidence, limitations and client test procedure](docs/radio-experiments.md).
+Existing receipt-based installations need the documented `--update-network`
+migration for this version; ordinary `--update` deliberately refuses network changes.

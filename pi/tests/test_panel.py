@@ -75,6 +75,19 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.request('/mimic.js', authenticated=False)[0], 401)
         self.assertEqual(self.request('/mimic.js')[0], 200)
 
+    def test_radio_action_requires_login_and_same_origin_and_uses_actual_peer(self):
+        fields = {'op': 'confirm', 'token': 'test', 'peer': '10.77.0.20'}
+        with patch.object(g, 'action_radio', return_value=('ok', 'Test only')) as action:
+            self.assertEqual(self.request('/wifi/radio', fields, authenticated=False)[0], 303)
+            self.assertEqual(self.request('/wifi/radio', fields, origin='https://foreign.example')[0], 403)
+            action.assert_not_called()
+            self.assertEqual(self.request('/wifi/radio', fields)[0], 303)
+            for _ in range(100):
+                if action.called:
+                    break
+                time.sleep(.01)
+            action.assert_called_once_with(fields, '127.0.0.1')
+
     def test_batch_route_large_input_no_activation_and_safe_flash(self):
         text = '\n'.join('socks5://user:SECRET%s@example.test:%d' % ('x'*400, 10000+i) for i in range(60))
         with patch.object(g, 'apply') as apply, patch.object(g, 'probe') as probe:

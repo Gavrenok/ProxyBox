@@ -42,30 +42,17 @@ nmcli connection modify geobox-ap \
     ipv6.gateway '' ipv6.routes '' ipv6.dns '' ipv6.dns-search '' \
     ipv6.never-default yes ipv6.ignore-auto-routes yes ipv6.ignore-auto-dns yes
 
-install -d /etc/dnsmasq.d
-conf=/etc/dnsmasq.d/geobox-ipv6.conf
-tmp=$(mktemp /etc/dnsmasq.d/.geobox-ipv6.XXXXXX)
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
-cat > "$tmp" <<'EOF'
-# GeoBox: fixed ULA LAN, SLAAC only. DNS is supplied via IPv4 DHCP at 10.77.0.1.
-# Explicit empty option6 suppresses dnsmasq's default link-local RDNSS advertisement.
-enable-ra
-dhcp-range=fd77:6765:6f62:1::,ra-only,slaac,64,1h
-dhcp-option=option6:dns-server
-dhcp-option=option6:domain-search
-ra-param=wlan0,30,90
-EOF
-dnsmasq --test --conf-file="$tmp"
-chmod 644 "$tmp"
-mv "$tmp" "$conf"
+/usr/bin/python3 /opt/geobox/lan.py --configure
+ap_iface=$(/usr/bin/python3 /opt/geobox/lan.py --interface)
+
 dnsmasq --test
 # Reapply keeps the AP up when supported; otherwise NM briefly reconnects it.
-if ! nmcli --wait 20 device reapply wlan0 >/dev/null 2>&1; then
+if ! nmcli --wait 20 device reapply "$ap_iface" >/dev/null 2>&1; then
     nmcli --wait 40 connection up geobox-ap >/dev/null
 fi
-sysctl -q -w net.ipv6.conf.wlan0.accept_ra=0
-sysctl -q -w net.ipv6.conf.wlan0.autoconf=0
-ip -6 address show dev wlan0 | grep -F 'fd77:6765:6f62:1::1/64' >/dev/null
+sysctl -q -w "net.ipv6.conf.$ap_iface.accept_ra=0"
+sysctl -q -w "net.ipv6.conf.$ap_iface.autoconf=0"
+ip -6 address show dev "$ap_iface" | grep -F 'fd77:6765:6f62:1::1/64' >/dev/null
 systemctl restart dnsmasq
 systemctl is-active --quiet dnsmasq
 echo 'IPv6 LAN configured; DNS stays on IPv4; sing-box retains block/proxy policy'

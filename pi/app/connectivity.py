@@ -6,6 +6,7 @@ An exit probe from the Pi is not a test of a phone's actual traffic or DNS leaks
 import html
 import ipaddress
 import json
+import lan
 import secrets
 import socket
 import struct
@@ -147,9 +148,9 @@ def diagnose(config, devices, scope, has_proxy, run, selector_read, exit_probe,
              'Маршрут IPv4 присутствует; доступность провайдера проверяется внешним запросом ниже.'
              if isinstance(routes, list) else 'Не удалось прочитать основной маршрут.')
 
-    rc, state, _ = bounded_run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show', 'wlan0'], timeout=2)
+    rc, state, _ = bounded_run(['nmcli', '-g', 'GENERAL.CONNECTION', 'device', 'show', lan.ap_interface()], timeout=2)
     if rc == 0 and state.strip() != 'geobox-ap':
-        step('Wi-Fi', 'warn', 'Профиль точки доступа GeoBox сейчас не активен на wlan0.')
+        step('Wi-Fi', 'warn', 'Профиль точки доступа GeoBox сейчас не активен на выбранном интерфейсе.')
         return finish('warn', 'Точка доступа GeoBox не активна',
                       'Проверь вкладку «Wi-Fi». Если подключён к домашней сети, перейди на Wi-Fi GeoBox после восстановления точки.')
     step('Wi-Fi', 'pass' if rc == 0 else 'unknown',

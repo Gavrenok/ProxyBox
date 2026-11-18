@@ -49,6 +49,8 @@ import connectivity as connmod  # noqa: E402
 import failover_policy as failpolicy  # noqa: E402
 import proxy_checks  # noqa: E402
 import setup_panel  # noqa: E402
+import lan  # noqa: E402
+import wifi_radio  # noqa: E402
 
 ETC = os.environ.get('GEOBOX_ETC', '/etc/geobox')
 PROXY_FILE = os.path.join(ETC, 'proxy.json')
@@ -1264,6 +1266,8 @@ def export_backup():
 
 def action_restore(raw, with_wifi):
     with apply_lock:
+        if with_wifi and wifi_radio.busy():
+            return ('warn', 'Сначала заверши радиооперацию.')
         err = recover_before_mutation()
         if err:
             return ('err', err)
@@ -1332,8 +1336,10 @@ def _action_restore_locked(raw, with_wifi):
         old = wifi_settings(with_secret=True)
         ok2, msg2 = _nm_modify(w['ssid'], w.get('band') or 'a', w.get('channel') or '36', w.get('psk') or '')
         if ok2:
-            threading.Thread(target=_restart_ap, args=(old,), daemon=True).start()
-            note = ' Wi-Fi перезапускается с настройками из файла (сеть «%s»).' % w['ssid']
+            _restart_ap(old)
+            if state['wifi_error']:
+                return ('err', state['wifi_error'])
+            note = ' Wi-Fi обновлён из файла (сеть «%s»).' % w['ssid']
         else:
             note = ' Wi-Fi из файла не применился: %s' % msg2
     return ('ok', 'Настройки восстановлены: прокси, список (%d), устройства (%d), Telegram. Для IPv6 через прокси повтори проверку в Настройках.%s'
@@ -1389,7 +1395,25 @@ def _restart_ap(old):
     state['wifi_error'] = 'Новые настройки Wi-Fi не поднялись (%s) - вернул старые.' % time.strftime('%H:%M')
 
 
+def action_radio(fields, peer):
+    with apply_lock:
+        return wifi_radio.action(fields.get('op', ''), fields, peer)
+
+
 def action_wifi(ssid, pw, pw2, band):
+    try:
+        with apply_lock, wifi_radio.radio_lock():
+            return _action_wifi_locked(ssid, pw, pw2, band)
+    except (OSError, RuntimeError):
+        return ('warn', 'Радио занято; дождись завершения текущей операции.')
+
+
+def _action_wifi_locked(ssid, pw, pw2, band):
+    if wifi_radio.busy():
+        return ('warn', 'Сначала заверши переключение адаптера или маячки.')
+    radios = telemetry.get('radios', [])
+    if radios and not any(r['interface'] == lan.ap_interface() and band in r['bands'] for r in radios):
+        return ('err', 'Выбранный диапазон не поддерживается текущим адаптером.')
     ssid = (ssid or '').strip()
     if not ssid or len(ssid.encode('utf-8')) > 32 or any(ord(c) < 32 for c in ssid):
         return ('err', 'Имя сети: от 1 до 32 символов (кириллица считается за 2).')
@@ -1409,8 +1433,10 @@ def action_wifi(ssid, pw, pw2, band):
     if not ok:
         return ('err', 'NetworkManager не принял настройки: ' + msg)
     state['wifi_error'] = None
-    threading.Thread(target=_restart_ap, args=(old,), daemon=True).start()
-    return ('ok', 'Wi-Fi перезапускается (секунд 10-20). Подключись заново к сети «%s»%s. '
+    _restart_ap(old)
+    if state['wifi_error']:
+        return ('err', state['wifi_error'])
+    return ('ok', 'Wi-Fi обновлён. Подключись заново к сети «%s»%s. '
                   'Если новые настройки не поднимутся, панель сама вернёт старые.'
             % (ssid, ' с новым паролем' if pw else ''))
 
@@ -1430,7 +1456,7 @@ def _dur(sec):
 
 
 def clients():
-    _, out, _ = run(['iw', 'dev', 'wlan0', 'station', 'dump'], timeout=10)
+    _, out, _ = run(['iw', 'dev', lan.ap_interface(), 'station', 'dump'], timeout=10)
     st, cur = {}, None
     for line in out.splitlines():
         line = line.strip()
@@ -1487,7 +1513,10 @@ def refresh_telemetry():
     global telemetry
     _, out, _ = run(['systemctl', 'is-active', SB_UNIT], timeout=3)
     snapshot = {'singbox': out.strip() or 'unknown', 'wifi': wifi_settings(),
-                'clients': clients(), 'traffic': telemetry['traffic'], 'time': time.time()}
+                'clients': clients(), 'traffic': telemetry['traffic'], 'time': time.time(),
+                'radios': telemetry.get('radios', []), 'radio_time': telemetry.get('radio_time', 0)}
+    if time.time() - snapshot['radio_time'] > 30:
+        snapshot.update(radios=wifi_radio.inventory(), radio_time=time.time())
     # Publish station/service state before potentially slow counter collection.
     telemetry = snapshot
     try:
@@ -1510,7 +1539,8 @@ def telemetry_loop():
 def audit_signature():
     """Cheap change marker for the last report; never exported to the browser."""
     result = []
-    for path in (SB_CONFIG, PROXY_FILE, os.path.join(ETC, 'devices.json'), os.path.join(ETC, 'library.json')):
+    for path in (SB_CONFIG, PROXY_FILE, os.path.join(ETC, 'devices.json'), os.path.join(ETC, 'library.json'),
+                 os.path.join(ETC, 'wifi-radio.json')):
         try:
             info = os.stat(path)
             result.append((info.st_ino, info.st_size, info.st_mtime_ns))
@@ -1950,6 +1980,7 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
         cards['proxies'].append(libpanel.render_library(
             lib, cur_item['id'] if cur_item else '', devs, import_result, library_filters))
     if tab == 'wifi':
+        cards['wifi'].append(wifi_radio.card(telemetry.get('radios', [])))
         w = telemetry.get('wifi') or {'ssid': '', 'band': 'a'}
         cards['wifi'].append('<div class="c"><h2>Wi-Fi</h2><form method="post" action="/wifi">'
                    '<div class="k">Имя сети</div><input type="text" name="ssid" value="%s" maxlength="32" autocomplete="off">'
@@ -1958,8 +1989,8 @@ def main_page(flash, probe_res=None, tab='status', client_ip='', library_filters
                    '<div class="k" style="margin-top:8px">Новый пароль ещё раз</div>'
                    '<input type="password" name="pw2" autocomplete="new-password">'
                    '<div class="k" style="margin-top:8px">Диапазон</div>'
-                   '<select name="band"><option value="a"%s>5 ГГц - быстрее, бьёт ближе</option>'
-                   '<option value="bg"%s>2.4 ГГц - медленнее, бьёт дальше</option></select>'
+                   '<select name="band"><option value="a"%s>5 ГГц</option>'
+                   '<option value="bg"%s>2.4 ГГц</option></select>'
                    '<div class="f"><button>Сохранить Wi-Fi</button></div></form>'
                    '<div class="hint">После сохранения Wi-Fi перезапустится, все устройства отключатся на 10-20 секунд. '
                    'Если меняешь имя или пароль - подключайся заново уже к новой сети. '
@@ -2240,6 +2271,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/ios/pairing':
             action = f.get('action', '')
             if action == 'start':
+                if wifi_radio.busy():
+                    with sess_lock:
+                        s['flash'] = ('warn', 'Сначала заверши радиооперацию.')
+                    return self._redirect('/?tab=mimic')
                 if get_ios_manager().operation.locked():
                     msg = ('warn', 'Дождись завершения текущей команды iPhone.')
                 else:
@@ -2251,6 +2286,9 @@ class Handler(BaseHTTPRequestHandler):
             with sess_lock:
                 s['flash'] = msg
             return self._redirect('/?tab=mimic')
+        if path == '/wifi/radio':
+            queue_action(s, 'Wi-Fi radio', lambda: action_radio(f, self.client_address[0]))
+            return self._redirect('/?tab=wifi')
         if path == '/lib/import':
             with lib_lock:
                 lib = libmod.load(ETC)
@@ -2262,6 +2300,7 @@ class Handler(BaseHTTPRequestHandler):
                 s['library_import'] = result
             return self._redirect('/?tab=proxies')
         slow = {
+            '/wifi': ('Обновление Wi-Fi', lambda: action_wifi(f.get('ssid', ''), f.get('pw', ''), f.get('pw2', ''), f.get('band', ''))),
             '/ipv6': ('Проверка и применение IPv6', lambda: action_ipv6(f.get('mode', ''))),
             '/diagnostics': ('Проверка защиты на малине', lambda: action_diagnostics(s)),
             '/diagnostics/connection': ('Поиск причины отсутствия интернета', lambda: action_connection_diagnostics(s, self.client_address[0])),

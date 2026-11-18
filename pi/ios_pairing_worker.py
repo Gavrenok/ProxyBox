@@ -5,6 +5,7 @@ import asyncio
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import importlib.metadata
 import json
+import lan
 import logging
 import os
 from pathlib import Path
@@ -165,10 +166,10 @@ class Window:
                     raise WorkerError('timer_unavailable') from None
                 script = f'''add table inet {GUARD}
 add chain inet {GUARD} input {{ type filter hook input priority -20; policy accept; }}
-add rule inet {GUARD} input iifname "wlan0" ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp dport {PORT} accept
+add rule inet {GUARD} input iifname "{lan.ap_interface()}" ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp dport {PORT} accept
 add rule inet {GUARD} input tcp dport {PORT} drop
 add chain inet geobox {CHAIN}
-add rule inet geobox {CHAIN} iifname "wlan0" ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp dport {PORT} accept
+add rule inet geobox {CHAIN} iifname "{lan.ap_interface()}" ip saddr 10.77.0.0/24 ip daddr 10.77.0.1 tcp dport {PORT} accept
 insert rule inet geobox input jump {CHAIN} comment "{TAG}"
 '''
                 command(NFT, '--check', '-f', '-', input=script)
